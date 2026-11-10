@@ -1,0 +1,61 @@
+# Public GitHub REST API. Read-only operations; no credentials required.
+# Set auth: {type: bearer, credential: github_token} to use a token instead.
+version: 1
+status: active
+service:
+  name: github
+  base_url: https://api.github.com
+  headers:
+    Accept: application/vnd.github+json
+  network:
+    allow_hosts: [api.github.com]
+  limits:
+    timeout: 10
+    max_response_bytes: 2000000
+
+operations:
+  - name: get_issue
+    description: Get one issue of the current repository by number.
+    path: /repos/{owner}/{repo}/issues/{issue_number}
+    tags: [github]
+    group: github_issues
+    input:
+      issue_number: {type: integer, minimum: 1}
+    bind:
+      owner: ctx.attributes.owner
+      repo: ctx.attributes.repo
+    output:
+      shape:
+        number: number
+        title: title
+        state: state
+        author: user.login
+        labels: labels[].name
+        body: {from: body, max_chars: 1500, default: ""}
+      required: [number, title]
+      selectable: true
+      max_tokens: 800
+      error_shape:
+        message: message
+
+  - name: list_issues
+    description: List recent issues of the current repository (newest first).
+    path: /repos/{owner}/{repo}/issues
+    tags: [github]
+    group: github_issues
+    input:
+      state: {enum: [open, closed, all], default: open}
+      per_page: {type: integer, minimum: 1, maximum: 50, default: 10}
+    bind:
+      owner: ctx.attributes.owner
+      repo: ctx.attributes.repo
+    pagination: {type: link}
+    output:
+      shape:
+        number: number
+        title: {from: title, max_chars: 120}
+        state: state
+        author: user.login
+      required: [number]
+      max_items: 20
+      max_tokens: 1200

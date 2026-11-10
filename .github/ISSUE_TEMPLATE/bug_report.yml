@@ -1,0 +1,26 @@
+name: Bug report
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Security issue?** Do not open a public issue. Use private vulnerability reporting
+        (see SECURITY.md).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations: {required: true}
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: A contract and the call that fails. Remove credentials and private data.
+      render: python
+    validations: {required: true}
+  - type: input
+    id: versions
+    attributes:
+      label: toolbound / Python / OS versions
+    validations: {required: true}

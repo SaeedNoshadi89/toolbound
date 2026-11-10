@@ -1,0 +1,195 @@
+{
+  "environment": {
+    "toolbound": "0.1.0",
+    "python": "3.13.15",
+    "implementation": "CPython",
+    "machine": "arm64",
+    "system": "Darwin",
+    "cpu_count": 12,
+    "tokenizer": "tiktoken 0.14.0 o200k_base",
+    "date": "2026-11-10"
+  },
+  "payloads": [
+    {
+      "case": "GitHub-shaped issue list (30 items)",
+      "raw": {
+        "bytes": 105902,
+        "byte_estimate": 35301,
+        "tokenizer": 25936
+      },
+      "shaped": {
+        "bytes": 12898,
+        "byte_estimate": 4300,
+        "tokenizer": 2717
+      },
+      "items_upstream": 30,
+      "items_returned": 30,
+      "continuation_cursor": false,
+      "required_fields_retained": true,
+      "omitted": [
+        {
+          "path": "[].body",
+          "reason": "max_chars",
+          "count": 28
+        }
+      ]
+    },
+    {
+      "case": "same, with 1,500-token budget",
+      "raw": {
+        "bytes": 105902,
+        "byte_estimate": 35301,
+        "tokenizer": 25936
+      },
+      "shaped": {
+        "bytes": 4212,
+        "byte_estimate": 1404,
+        "tokenizer": 894
+      },
+      "items_upstream": 30,
+      "items_returned": 10,
+      "continuation_cursor": true,
+      "required_fields_retained": true,
+      "omitted": [
+        {
+          "path": "[].body",
+          "reason": "max_chars",
+          "count": 8
+        },
+        {
+          "path": "$",
+          "reason": "budget",
+          "count": 20
+        }
+      ]
+    },
+    {
+      "case": "Persian legal search (20 rulings)",
+      "raw": {
+        "bytes": 132276,
+        "byte_estimate": 44092,
+        "tokenizer": 23587
+      },
+      "shaped": {
+        "bytes": 26583,
+        "byte_estimate": 8861,
+        "tokenizer": 4910
+      },
+      "items_upstream": 20,
+      "items_returned": 20,
+      "continuation_cursor": false,
+      "required_fields_retained": true,
+      "omitted": [
+        {
+          "path": "[].excerpt",
+          "reason": "max_chars",
+          "count": 20
+        }
+      ]
+    }
+  ],
+  "estimator": [
+    {
+      "sample": "English JSON (GitHub-shaped)",
+      "tokenizer": 25936,
+      "byte_estimate": 35301,
+      "estimate_over_real": 1.36,
+      "bytes_per_token": 4.08
+    },
+    {
+      "sample": "Persian JSON (legal)",
+      "tokenizer": 23587,
+      "byte_estimate": 44092,
+      "estimate_over_real": 1.87,
+      "bytes_per_token": 5.61
+    },
+    {
+      "sample": "Shaped English result",
+      "tokenizer": 2717,
+      "byte_estimate": 4300,
+      "estimate_over_real": 1.58,
+      "bytes_per_token": 4.75
+    }
+  ],
+  "definitions": [
+    {
+      "tools_registered": 1,
+      "strategy": "generic http_request tool (reference)",
+      "definitions": 1,
+      "bytes": 283,
+      "byte_estimate": 95,
+      "tokenizer": 67
+    },
+    {
+      "tools_registered": 10,
+      "strategy": "direct",
+      "definitions": 10,
+      "bytes": 3351,
+      "byte_estimate": 1117,
+      "tokenizer": 852
+    },
+    {
+      "tools_registered": 10,
+      "strategy": "grouped",
+      "definitions": 2,
+      "bytes": 1893,
+      "byte_estimate": 631,
+      "tokenizer": 558
+    },
+    {
+      "tools_registered": 50,
+      "strategy": "direct",
+      "definitions": 50,
+      "bytes": 16831,
+      "byte_estimate": 5611,
+      "tokenizer": 4252
+    },
+    {
+      "tools_registered": 50,
+      "strategy": "grouped",
+      "definitions": 10,
+      "bytes": 9581,
+      "byte_estimate": 3194,
+      "tokenizer": 2782
+    },
+    {
+      "tools_registered": 200,
+      "strategy": "direct",
+      "definitions": 200,
+      "bytes": 67581,
+      "byte_estimate": 22527,
+      "tokenizer": 17002
+    },
+    {
+      "tools_registered": 200,
+      "strategy": "grouped",
+      "definitions": 40,
+      "bytes": 38771,
+      "byte_estimate": 12924,
+      "tokenizer": 11122
+    }
+  ],
+  "pipeline": {
+    "iterations": 500,
+    "payload_bytes": 105902,
+    "median_ms": 1.173,
+    "p95_ms": 1.213
+  },
+  "end_to_end": {
+    "iterations": 300,
+    "raw_httpx_get_and_json": {
+      "median_ms": 1.034,
+      "p95_ms": 1.247
+    },
+    "toolbound_call_with_shaping": {
+      "median_ms": 1.898,
+      "p95_ms": 2.118
+    },
+    "median_overhead_ms": 0.864
+  },
+  "memory": {
+    "input_items": 2000,
+    "input_json_bytes": 7129934,
+    "peak_traced_bytes_during_shaping": 177959
+  }
+}

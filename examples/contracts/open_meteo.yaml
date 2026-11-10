@@ -1,0 +1,22 @@
+# Open-Meteo weather API: free, no API key. https://open-meteo.com/
+version: 1
+service:
+  name: open_meteo
+  base_url: https://api.open-meteo.com
+operations:
+  - name: current_weather
+    description: Current temperature and wind for a latitude/longitude.
+    path: /v1/forecast
+    tags: [weather]
+    input:
+      latitude: {type: number, minimum: -90, maximum: 90}
+      longitude: {type: number, minimum: -180, maximum: 180}
+      current: {const: "temperature_2m,wind_speed_10m", default: "temperature_2m,wind_speed_10m"}
+    output:
+      root: current
+      shape:
+        time: time
+        temperature_c: temperature_2m
+        wind_speed_kmh: wind_speed_10m
+      required: [temperature_c]
+      max_tokens: 100

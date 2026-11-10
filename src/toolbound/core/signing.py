@@ -1,0 +1,81 @@
+"""HMAC-signed, expiring tokens for cursors and approval grants."""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import hmac
+import json
+import secrets
+import time
+from typing import Any
+
+from .errors import ConfigurationError
+
+_MIN_SECRET_BYTES = 32
+
+
+def _b64(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _unb64(text: str) -> bytes:
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def canonical_digest(value: Any) -> str:
+    """SHA-256 over canonical JSON (sorted keys, no whitespace)."""
+    raw = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+class Signer:
+    """Signs small JSON payloads. Tokens look like ``<prefix>.<payload>.<mac>``.
+
+    Tokens are integrity-protected, not encrypted: never put secrets in them.
+    """
+
+    def __init__(self, secret: bytes | str | None) -> None:
+        if secret is None:
+            key = secrets.token_bytes(32)
+            self.ephemeral = True
+        else:
+            key = secret.encode() if isinstance(secret, str) else bytes(secret)
+            self.ephemeral = False
+        if len(key) < _MIN_SECRET_BYTES:
+            raise ConfigurationError("Gateway secret must be at least 32 bytes")
+        self._key = key
+
+    def sign(self, prefix: str, payload: dict[str, Any], ttl_seconds: float) -> str:
+        body = dict(payload)
+        body["exp"] = int(time.time() + ttl_seconds)
+        encoded = _b64(json.dumps(body, sort_keys=True, separators=(",", ":")).encode())
+        mac = self._mac(prefix, encoded)
+        return f"{prefix}.{encoded}.{mac}"
+
+    def verify(self, prefix: str, token: Any) -> dict[str, Any] | None:
+        """Return the payload, or None if the token is malformed, forged or expired."""
+        if not isinstance(token, str) or len(token) > 8192:
+            return None
+        parts = token.split(".")
+        if len(parts) != 3 or parts[0] != prefix:
+            return None
+        expected = self._mac(prefix, parts[1])
+        if not hmac.compare_digest(expected, parts[2]):
+            return None
+        try:
+            payload = json.loads(_unb64(parts[1]))
+        except (ValueError, UnicodeDecodeError):
+            return None
+        if not isinstance(payload, dict) or not isinstance(payload.get("exp"), int):
+            return None
+        if payload["exp"] < time.time():
+            return None
+        return payload
+
+    def _mac(self, prefix: str, encoded: str) -> str:
+        digest = hmac.new(self._key, f"{prefix}.{encoded}".encode(), hashlib.sha256).digest()
+        return _b64(digest[:24])
+
+    def __repr__(self) -> str:
+        return f"Signer(ephemeral={self.ephemeral})"
