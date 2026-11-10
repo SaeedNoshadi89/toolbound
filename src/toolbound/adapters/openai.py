@@ -29,7 +29,7 @@ from toolbound.core.context import ExecutionContext
 from toolbound.core.exposure import Strategy
 from toolbound.core.gateway import Gateway
 
-from ._common import Call, ToolCallBatch, execute_calls, get, parse_json_arguments
+from ._common import Call, ToolCallBatch, execute_calls, get, optional_id, parse_json_arguments
 
 __all__ = ["run_tool_calls", "tool_calls", "tools"]
 
@@ -80,7 +80,9 @@ def tool_calls(obj: Any) -> tuple[list[Call], Api]:
             if get(item, "type") != "function_call":
                 continue
             arguments, error = parse_json_arguments(get(item, "arguments"))
-            calls.append(Call(str(get(item, "call_id")), str(get(item, "name")), arguments, error))
+            calls.append(
+                Call(optional_id(get(item, "call_id")), str(get(item, "name")), arguments, error)
+            )
         return calls, "responses"
     choices = get(obj, "choices")
     message = get(choices[0], "message") if choices else obj
@@ -88,7 +90,9 @@ def tool_calls(obj: Any) -> tuple[list[Call], Api]:
     for item in get(message, "tool_calls") or []:
         function = get(item, "function")
         arguments, error = parse_json_arguments(get(function, "arguments"))
-        calls.append(Call(str(get(item, "id")), str(get(function, "name")), arguments, error))
+        calls.append(
+            Call(optional_id(get(item, "id")), str(get(function, "name")), arguments, error)
+        )
     return calls, "chat"
 
 

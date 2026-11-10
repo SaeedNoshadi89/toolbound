@@ -27,10 +27,13 @@ from toolbound.core.contracts import (
 )
 from toolbound.core.credentials import EnvCredentials, StaticCredentials
 from toolbound.core.errors import (
+    ApprovalInvalid,
     ConfigurationError,
     ErrorCode,
     NetworkBlocked,
+    StateStoreError,
     ToolboundError,
+    ToolboundWarning,
     ToolFailure,
 )
 from toolbound.core.exposure import ToolDefinition
@@ -50,7 +53,7 @@ from toolbound.core.shaping import Omission
 from toolbound.core.state import MemoryStateStore
 from toolbound.transport.mock import MockResponse, MockTransport
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 
 def __getattr__(name: str) -> object:
@@ -63,6 +66,7 @@ def __getattr__(name: str) -> object:
 
 __all__ = [
     "ApiKeyAuth",
+    "ApprovalInvalid",
     "AuthorizationRequest",
     "BasicAuth",
     "BearerAuth",
@@ -100,6 +104,7 @@ __all__ = [
     "SecureTransport",
     "Service",
     "StateStore",
+    "StateStoreError",
     "StaticCredentials",
     "TokenEstimator",
     "Tool",
@@ -109,6 +114,7 @@ __all__ = [
     "ToolResult",
     "ToolSpec",
     "ToolboundError",
+    "ToolboundWarning",
     "Transport",
     "__version__",
     "allow_all",

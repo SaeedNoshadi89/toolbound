@@ -58,7 +58,7 @@ async def main() -> None:
             assert numbers == list(range(1, 61)), "every issue exactly once, in order"
             print(f"all {len(numbers)} issues retrieved in {calls} budgeted calls, none lost")
 
-            tampered = cursor or result.meta.next_cursor or "tbc1.e30.x"
+            tampered = cursor or result.meta.next_cursor or "tbc2.AAAA"
             bad = await gw.call("list_issues", {"cursor": tampered[:-2] + "xx"}, ctx=ctx)
             print("tampered cursor:", bad.error.to_dict() if bad.error else bad.data)
 

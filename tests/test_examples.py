@@ -26,6 +26,8 @@ def test_example_runs(path):
         pytest.skip("network example; set TOOLBOUND_NETWORK_TESTS=1")
     if requirement == "anthropic":
         pytest.skip("calls the paid Anthropic API; run manually")
+    if requirement in ("fastapi", "langgraph"):
+        pytest.importorskip(requirement)
     out = subprocess.run(
         [sys.executable, str(path)],
         capture_output=True,

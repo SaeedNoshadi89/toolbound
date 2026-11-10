@@ -10,7 +10,7 @@ uv run --with tiktoken python benchmarks/run.py   # adds tokenizer counts (o200k
 ```
 
 **Environment of the published run:** Apple M4 Pro (12 cores), macOS, CPython 3.13.15,
-toolbound 0.1.0, tiktoken 0.14.0 with `o200k_base`, 2026-11-10.
+toolbound 0.2.0, tiktoken 0.14.0 with `o200k_base`, 2026-11-10.
 
 ## Method and caveats
 
@@ -83,14 +83,26 @@ Observations:
 
 | Measurement | Median | p95 |
 |---|---:|---:|
-| Pipeline only: mock transport, 30-issue payload (105 KB), 500 calls | 1.173 ms | 1.213 ms |
-| Raw `httpx` GET + `json()` against a local server, 300 calls | 1.034 ms | 1.247 ms |
-| Toolbound call (validation, policy, DNS check, IP pinning, shaping), same server | 1.898 ms | 2.118 ms |
+| Pipeline only: mock transport, 30-issue payload (105 KB), 500 calls | 0.911 ms | 1.024 ms |
+| Raw `httpx` GET + `json()` against a local server, 300 calls | 0.864 ms | 1.046 ms |
+| Toolbound call (validation, policy, DNS check, IP pinning, shaping), same server | 1.442 ms | 1.687 ms |
 
-Median added latency over raw httpx: **0.864 ms** per call for this payload. Most of it
+Median added latency over raw httpx: **0.578 ms** per call for this payload. Most of it
 is JSON decoding plus shaping of a 105 KB body, so the cost grows with payload size.
 
 **Memory:** shaping 2,000 issues (7.1 MB of JSON, already in memory) to a 50-item,
 2,000-token result peaked at **178 KB** of additional traced allocations
 (`tracemalloc`). This excludes the input itself. The transport buffers up to
 `max_response_bytes` per response.
+
+**Worst-case trimming (added in 0.2):** a hostile 4.8 MB pass-through object (1,200 strings
+of 4,000 characters) against a 2,000-token budget is rejected with `result_too_large` in
+**0.118 s**. In 0.1 the same input took about 8 s of CPU **on the event loop** before
+failing. Bodies over 256 KB are now also decoded and shaped in a worker thread.
+
+**0.1 → 0.2 comparison** (same machine and fixtures): payload, estimator and
+tool-definition numbers are unchanged. Pipeline-only median 1.173 → 0.911 ms and
+end-to-end added latency 0.864 → 0.578 ms: 0.2 is *faster*, because the
+secret-detection regex was rewritten (one shared lookbehind instead of per-branch anchors)
+while fixing its quadratic worst case. An intermediate fix without that rewrite measured
+1.45 ms.

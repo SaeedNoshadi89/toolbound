@@ -9,13 +9,16 @@ from __future__ import annotations
 
 import copy
 import json
+import warnings
 from collections.abc import Mapping
 from typing import Any
 
 from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import SchemaError, ValidationError
 
-from .errors import ConfigurationError, ErrorCode, ToolFailure
+from .errors import ConfigurationError, ErrorCode, ToolboundWarning, ToolFailure
+
+_CHECKED_FORMATS = frozenset(FormatChecker().checkers)
 
 _MAX_SCHEMA_DEPTH = 16
 _MAX_SCHEMA_BYTES = 64 * 1024
@@ -56,25 +59,74 @@ def normalize_input_schema(tool_name: str, spec: Mapping[str, Any]) -> dict[str,
         raise ConfigurationError(f"tool {tool_name}: invalid input schema: {exc.message}") from exc
     if len(json.dumps(schema)) > _MAX_SCHEMA_BYTES:
         raise ConfigurationError(f"tool {tool_name}: input schema is too large")
+    unchecked = sorted(_formats(schema) - _CHECKED_FORMATS)
+    if unchecked:
+        warnings.warn(
+            f"tool {tool_name}: JSON Schema format(s) {unchecked} are not enforced in this "
+            "environment (jsonschema needs optional packages for them). Use 'pattern', "
+            "'enum' or limits for anything security-relevant.",
+            ToolboundWarning,
+            stacklevel=4,
+        )
     return schema
 
 
-def _close_nested_objects(node: Any, *, depth: int, tool_name: str) -> None:
+def _formats(node: Any) -> set[str]:
+    found: set[str] = set()
+    if isinstance(node, dict):
+        value = node.get("format")
+        if isinstance(value, str):
+            found.add(value)
+        for child in node.values():
+            found |= _formats(child)
+    elif isinstance(node, list):
+        for child in node:
+            found |= _formats(child)
+    return found
+
+
+def _close_nested_objects(node: Any, *, depth: int, tool_name: str, where: str = "") -> None:
+    """Close every nested object schema that lists ``properties``.
+
+    Unknown keys are rejected unless the contract sets ``additionalProperties``
+    explicitly. A schema counts as an object schema when it has ``properties``,
+    whatever its ``type`` says (``["object", "null"]``, or no ``type`` at all). An
+    object schema *without* ``properties`` and without an explicit
+    ``additionalProperties`` accepts any keys; that is allowed but warned about.
+    """
     if depth > _MAX_SCHEMA_DEPTH:
         raise ConfigurationError(f"tool {tool_name}: input schema nests too deeply")
     if isinstance(node, dict):
-        if node.get("type") == "object" and "properties" in node and depth > 0:
-            node.setdefault("additionalProperties", False)
+        if depth > 0 and _is_object_schema(node):
+            if "properties" in node:
+                node.setdefault("additionalProperties", False)
+            elif "additionalProperties" not in node and "patternProperties" not in node:
+                warnings.warn(
+                    f"tool {tool_name}: object at {where or '$'} accepts any keys. Add "
+                    "'properties' (unknown keys are then rejected) or set "
+                    "'additionalProperties' explicitly.",
+                    ToolboundWarning,
+                    stacklevel=5,
+                )
         for key, value in node.items():
             if key in ("properties", "$defs", "definitions", "patternProperties"):
                 if isinstance(value, dict):
-                    for sub in value.values():
-                        _close_nested_objects(sub, depth=depth + 1, tool_name=tool_name)
+                    for name, sub in value.items():
+                        _close_nested_objects(
+                            sub, depth=depth + 1, tool_name=tool_name, where=f"{where}.{name}"
+                        )
             elif isinstance(value, dict | list):
-                _close_nested_objects(value, depth=depth + 1, tool_name=tool_name)
+                _close_nested_objects(value, depth=depth + 1, tool_name=tool_name, where=where)
     elif isinstance(node, list):
         for item in node:
-            _close_nested_objects(item, depth=depth + 1, tool_name=tool_name)
+            _close_nested_objects(item, depth=depth + 1, tool_name=tool_name, where=where)
+
+
+def _is_object_schema(node: dict[str, Any]) -> bool:
+    kind = node.get("type")
+    if "properties" in node:
+        return True
+    return kind == "object" or (isinstance(kind, list) and "object" in kind)
 
 
 def _reject_remote_refs(node: Any, tool_name: str) -> None:

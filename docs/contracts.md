@@ -80,7 +80,7 @@ tokens are easy.
 | `description` | `description=` | required | ≤ 1024 chars; write it for the model: what it does and when to use it |
 | `method` | `method=` | `GET` | GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS |
 | `path` | `path=` | required | template like `/repos/{owner}/{repo}/issues/{number}`; no `..`, query or fragment |
-| `effect` | `effect=` | `read` | `read`, `write` or `destructive`; drives approval and the cursor argument |
+| `effect` | `effect=` | from the method | `read`, `write` or `destructive`; drives approval, replay protection, retries and the cursor argument. Default: GET/HEAD/OPTIONS → `read`, POST/PUT/PATCH → `write`, DELETE → `destructive`. A read-only POST (search) must say `effect: read`; a DELETE can never be `read`. Python tools must always declare it |
 | `input` | `input=` | `{}` | JSON Schema; see [Input](#input) |
 | `bind` | `bind=` | `{}` | trusted values; see [Bindings](#bindings) |
 | `required_scopes` | `required_scopes=` | `[]` | the context must have all of them, otherwise the tool is invisible |

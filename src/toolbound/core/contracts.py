@@ -214,10 +214,15 @@ class Limits:
     max_request_bytes: int = 256 * 1024
     max_response_bytes: int = 5 * 1024 * 1024
     max_concurrency: int = 8
+    #: Deadline for one tool call including every retry, backoff and wait for a
+    #: concurrency slot. ``timeout`` bounds a single attempt.
+    total_timeout: float = 60.0
 
     def __post_init__(self) -> None:
-        if self.timeout <= 0 or self.connect_timeout <= 0:
+        if self.timeout <= 0 or self.connect_timeout <= 0 or self.total_timeout <= 0:
             raise ConfigurationError("timeouts must be positive")
+        if self.total_timeout < self.timeout:
+            raise ConfigurationError("total_timeout must be at least timeout")
         if self.max_request_bytes <= 0 or self.max_response_bytes <= 0:
             raise ConfigurationError("byte limits must be positive")
         if self.max_concurrency < 1:
@@ -311,6 +316,9 @@ def _default_redact_keys() -> tuple[str, ...]:
         "set-cookie",
         "private_key",
         "session",
+        "session_id",
+        "x-api-key",
+        "client_assertion",
     )
 
 
@@ -530,7 +538,9 @@ class ToolSpec:
     name: str
     description: str
     input: Mapping[str, Any] = field(default_factory=dict)
-    effect: Effect = Effect.READ
+    #: ``None`` is resolved in ``__post_init__``: REST operations infer it from the
+    #: HTTP method; Python tools must declare it.
+    effect: Effect = None  # type: ignore[assignment]
     output: Output = field(default_factory=Output)
     bind: Mapping[str, Binding] = field(default_factory=dict)
     required_scopes: tuple[str, ...] = ()
@@ -551,7 +561,8 @@ class ToolSpec:
             raise ConfigurationError(
                 f"tool {self.name}: description longer than {_MAX_DESCRIPTION} characters"
             )
-        object.__setattr__(self, "effect", Effect(self.effect))
+        if not _unset(self.effect):
+            object.__setattr__(self, "effect", Effect(self.effect))
         object.__setattr__(self, "bind", {k: parse_binding(v) for k, v in dict(self.bind).items()})
         object.__setattr__(self, "required_scopes", tuple(self.required_scopes))
         object.__setattr__(self, "tags", tuple(self.tags))
@@ -565,8 +576,23 @@ class ToolSpec:
         return self.effect is Effect.DESTRUCTIVE
 
 
+def _unset(value: object) -> bool:
+    return value is None
+
+
 _METHODS = frozenset({"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"})
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+#: Default effect per HTTP method when a contract does not declare one. A POST
+#: that only reads (a search endpoint) must say ``effect="read"`` explicitly.
+_METHOD_EFFECTS = {
+    "GET": Effect.READ,
+    "HEAD": Effect.READ,
+    "OPTIONS": Effect.READ,
+    "POST": Effect.WRITE,
+    "PUT": Effect.WRITE,
+    "PATCH": Effect.WRITE,
+    "DELETE": Effect.DESTRUCTIVE,
+}
 _PLACEHOLDER = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
@@ -596,6 +622,13 @@ class Operation(ToolSpec):
         if method not in _METHODS:
             raise ConfigurationError(f"tool {self.name}: unsupported HTTP method {self.method!r}")
         object.__setattr__(self, "method", method)
+        inferred = _METHOD_EFFECTS[method]
+        if _unset(self.effect):
+            object.__setattr__(self, "effect", inferred)
+        elif method == "DELETE" and self.effect is Effect.READ:
+            raise ConfigurationError(
+                f"tool {self.name}: a DELETE operation cannot be effect='read'"
+            )
         if not self.path.startswith("/") or "?" in self.path or "#" in self.path:
             raise ConfigurationError(
                 f"tool {self.name}: path must start with '/' and contain no query or fragment"
@@ -642,6 +675,11 @@ class PythonTool(ToolSpec):
 
     def __post_init__(self) -> None:
         ToolSpec.__post_init__(self)
+        if _unset(self.effect):
+            raise ConfigurationError(
+                f"tool {self.name}: Python tools must declare effect='read', 'write' or "
+                "'destructive' (Toolbound cannot tell what a handler does)"
+            )
         if not callable(self.handler):
             raise ConfigurationError(f"tool {self.name}: handler must be callable")
         if self.timeout <= 0:

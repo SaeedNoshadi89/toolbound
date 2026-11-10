@@ -76,25 +76,33 @@ your shape keys**. The model can narrow the result but cannot name arbitrary pat
 
 ## Redaction
 
-1. **Keys** (case-insensitive), anywhere in the result: `password`, `passwd`, `secret`,
+1. **Keys**, anywhere in the result, matched ignoring case, `-` and `_` (so `accessToken`,
+   `ACCESS-TOKEN` and `access_token` are the same key). A shape field whose *source* key is
+   sensitive is redacted even when renamed. Defaults: `password`, `passwd`, `secret`,
    `client_secret`, `token`, `access_token`, `refresh_token`, `id_token`, `api_key`,
-   `apikey`, `authorization`, `cookie`, `set-cookie`, `private_key`, `session`. Customize
-   with `redact_keys=`.
+   `apikey`, `authorization`, `cookie`, `set-cookie`, `private_key`, `session`, `session_id`,
+   `x-api-key`, `client_assertion`. Customize with `redact_keys=`.
 2. **Secret patterns** in strings (`redact_secrets=True`): PEM private keys, AWS access key
    ids, GitHub/Slack/Stripe tokens, `sk-…` style API keys, Google API keys, JWTs,
    `Bearer …` strings.
-3. **Credentials used for this request**, if the upstream echoes them back (including
-   the Basic-auth encoding).
+3. **Credentials used for this request**, if the upstream echoes them back: raw,
+   URL-encoded, JSON-escaped, base64 and Basic-auth forms, in values and in object keys.
+   Fragments or other transformations of a secret are not detected.
 4. **Your hooks**: `redactors=(fn,)`, where `fn(path, value) -> value` is called for every
    scalar (useful for PII rules).
 
 Every replacement increments `meta.redacted`. Redaction runs **before** truncation, so a
-secret can't slip through by being cut in half.
+secret can't slip through by being cut in half. Secret patterns run in linear time, and
+only over the part of each string that can still be returned (the longest `max_chars`
+plus 4 KB), so a hostile response cannot make redaction slow.
 
 ## Limits and budgets
 
 - `max_items` (default 50) applies to every list, and `max_chars` (default 4000) to every
-  string. Per-field limits override them.
+  string. Per-field limits override them. These limits apply to `required` fields too:
+  a cut is always reported in `meta.omitted`, but "required" protects a field from being
+  *dropped*, not from being *shortened*. Raise the field's `max_chars` if it must stay
+  whole.
 - `max_tokens` (default 2000) is the budget for `data`. The envelope adds a small,
   roughly constant overhead (`meta`, about 30–150 tokens depending on omissions and
   cursors).
@@ -130,7 +138,7 @@ may be separated.
 ## Pagination
 
 The model never sees upstream tokens or URLs, only `meta.next_cursor`: an opaque string
-signed with HMAC-SHA256, expiring after `Gateway(cursor_ttl=3600)` seconds, and bound to
+**encrypted and authenticated** (AES-256-GCM, so its contents cannot be read or changed), expiring after `Gateway(cursor_ttl=3600)` seconds, and bound to
 the tool, its contract fingerprint, the actor/tenant and the other arguments. Pass it
 back as the `cursor` argument to continue.
 
@@ -160,7 +168,7 @@ stable ordering between calls.
     "warnings": ["response does not match schema at items.0.id"],
     "items_returned": 10,
     "items_in_upstream_page": 30,
-    "next_cursor": "tbc1.…",
+    "next_cursor": "tbc2.…",
     "source": {"service": "github", "operation": "list_issues", "status": 200,
                "request_id": "ABCD:1234"}
   }

@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 430" width="980" height="430" role="img" aria-labelledby="t d" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title id="t">Where Toolbound sits</title>
+  <desc id="d">A user signs in to your app. Your app builds a trusted ExecutionContext and runs the agent loop. The model asks for a tool with arguments; your app passes the call to the Toolbound gateway, which validates, binds trusted values, authorizes, asks a human when needed, executes against the upstream API or Python function, and shapes the result before it goes back to the model.</desc>
+  <style>
+    :root { --bg:#ffffff; --panel:#f6f8fa; --edge:#d0d7de; --ink:#1f2328; --muted:#59636e; --accent:#0969da; --accentbg:#ddf4ff; --warn:#9a6700; --warnbg:#fff8c5; --ok:#1a7f37; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg:#0d1117; --panel:#161b22; --edge:#30363d; --ink:#e6edf3; --muted:#9198a1; --accent:#4493f8; --accentbg:#0c2d6b; --warn:#d29922; --warnbg:#3b2e04; --ok:#3fb950; }
+    }
+    .bg { fill: var(--bg); }
+    .box { fill: var(--panel); stroke: var(--edge); stroke-width: 1.5; }
+    .tb { fill: var(--accentbg); stroke: var(--accent); stroke-width: 2; }
+    .stage { fill: var(--bg); stroke: var(--accent); stroke-width: 1.2; }
+    .h { fill: var(--ink); font-size: 15px; font-weight: 600; }
+    .s { fill: var(--muted); font-size: 12px; }
+    .st { fill: var(--ink); font-size: 12.5px; }
+    .line { stroke: var(--muted); stroke-width: 1.6; fill: none; marker-end: url(#arrow); }
+    .back { stroke: var(--ok); stroke-width: 1.6; fill: none; marker-end: url(#arrowok); }
+    .ask { stroke: var(--warn); stroke-width: 1.6; fill: none; stroke-dasharray: 5 4; marker-end: url(#arrowwarn); }
+    .lbl { fill: var(--muted); font-size: 11.5px; }
+    .lblok { fill: var(--ok); font-size: 11.5px; }
+    .lblwarn { fill: var(--warn); font-size: 11.5px; }
+    .badge circle { fill: var(--accent); }
+    .badge text { fill: #ffffff; font-size: 12px; font-weight: 700; }
+    .badge { animation: pulse 12s infinite; opacity: .35; }
+    .b1 { animation-delay: 0s; } .b2 { animation-delay: 2s; } .b3 { animation-delay: 4s; }
+    .b4 { animation-delay: 6s; } .b5 { animation-delay: 8s; } .b6 { animation-delay: 10s; }
+    @keyframes pulse { 0%, 16% { opacity: 1; } 17%, 100% { opacity: .35; } }
+    @media (prefers-reduced-motion: reduce) { .badge { animation: none; opacity: 1; } }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#8c959f"/></marker>
+    <marker id="arrowok" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2da44e"/></marker>
+    <marker id="arrowwarn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#bf8700"/></marker>
+  </defs>
+  <rect class="bg" x="0" y="0" width="980" height="430" rx="12"/>
+
+  <!-- User -->
+  <rect class="box" x="20" y="150" width="110" height="80" rx="10"/>
+  <text class="h" x="75" y="185" text-anchor="middle">User</text>
+  <text class="s" x="75" y="205" text-anchor="middle">signs in</text>
+
+  <!-- Your app -->
+  <rect class="box" x="170" y="40" width="200" height="350" rx="10"/>
+  <text class="h" x="270" y="68" text-anchor="middle">Your app</text>
+  <text class="s" x="270" y="86" text-anchor="middle">FastAPI, worker, CLI…</text>
+  <rect class="stage" x="185" y="105" width="170" height="62" rx="8"/>
+  <text class="st" x="270" y="127" text-anchor="middle">authenticates the user</text>
+  <text class="s" x="270" y="146" text-anchor="middle">ExecutionContext(actor,</text>
+  <text class="s" x="270" y="160" text-anchor="middle">tenant, scopes)</text>
+  <rect class="stage" x="185" y="185" width="170" height="80" rx="8"/>
+  <text class="st" x="270" y="207" text-anchor="middle">agent loop + model</text>
+  <text class="s" x="270" y="226" text-anchor="middle">Claude · OpenAI · LangGraph</text>
+  <text class="s" x="270" y="242" text-anchor="middle">model picks a tool and</text>
+  <text class="s" x="270" y="256" text-anchor="middle">arguments (untrusted)</text>
+  <rect class="stage" x="185" y="283" width="170" height="90" rx="8"/>
+  <text class="st" x="270" y="305" text-anchor="middle">approval screen</text>
+  <text class="s" x="270" y="324" text-anchor="middle">shows exactly what will</text>
+  <text class="s" x="270" y="338" text-anchor="middle">run; human approves</text>
+  <text class="s" x="270" y="352" text-anchor="middle">→ gateway.resume(token)</text>
+
+  <!-- Toolbound -->
+  <rect class="tb" x="480" y="40" width="290" height="350" rx="12"/>
+  <text class="h" x="625" y="68" text-anchor="middle">Toolbound gateway</text>
+  <text class="s" x="625" y="86" text-anchor="middle">a library inside your process</text>
+  <g>
+    <rect class="stage" x="498" y="100" width="254" height="34" rx="7"/><text class="st" x="625" y="122" text-anchor="middle">validate arguments (closed schema)</text>
+    <rect class="stage" x="498" y="142" width="254" height="34" rx="7"/><text class="st" x="625" y="164" text-anchor="middle">bind trusted values from the context</text>
+    <rect class="stage" x="498" y="184" width="254" height="34" rx="7"/><text class="st" x="625" y="206" text-anchor="middle">scopes + your authorize() policy</text>
+    <rect class="stage" x="498" y="226" width="254" height="34" rx="7"/><text class="st" x="625" y="248" text-anchor="middle">approval · replay · rate limit</text>
+    <rect class="stage" x="498" y="268" width="254" height="34" rx="7"/><text class="st" x="625" y="290" text-anchor="middle">execute: checked network / handler</text>
+    <rect class="stage" x="498" y="310" width="254" height="34" rx="7"/><text class="st" x="625" y="332" text-anchor="middle">shape: allowlist, redact, budget</text>
+  </g>
+
+  <!-- Upstream -->
+  <rect class="box" x="815" y="150" width="150" height="120" rx="10"/>
+  <text class="h" x="890" y="182" text-anchor="middle">Upstream</text>
+  <text class="s" x="890" y="204" text-anchor="middle">allowlisted REST APIs</text>
+  <text class="s" x="890" y="222" text-anchor="middle">your Python functions</text>
+  <text class="s" x="890" y="240" text-anchor="middle">(credentials stay</text>
+  <text class="s" x="890" y="254" text-anchor="middle">on this side)</text>
+
+  <!-- Arrows -->
+  <path class="line" d="M130,190 L182,136"/>
+  <path class="line" d="M270,167 L270,183"/>
+  <path class="line" d="M355,200 C420,200 430,117 495,117"/>
+  <text class="lbl" x="425" y="100" text-anchor="middle">gateway.call(name,</text>
+  <text class="lbl" x="425" y="114" text-anchor="middle">args, ctx)</text>
+  <path class="line" d="M752,285 C790,285 785,210 812,210"/>
+  <text class="lbl" x="790" y="305" text-anchor="middle">checked</text>
+  <text class="lbl" x="790" y="319" text-anchor="middle">requests</text>
+  <path class="back" d="M480,232 L358,232"/>
+  <text class="lblok" x="419" y="224" text-anchor="middle">result</text>
+  <path class="ask" d="M498,252 C440,252 420,320 358,322"/>
+  <text class="lblwarn" x="625" y="412" text-anchor="middle">destructive or approval-required tools return approval_required; nothing is sent until a human approves</text>
+
+  <!-- Step badges -->
+  <g class="badge b1"><circle cx="150" cy="150" r="11"/><text x="150" y="154" text-anchor="middle">1</text></g>
+  <g class="badge b2"><circle cx="300" cy="175" r="11"/><text x="300" y="179" text-anchor="middle">2</text></g>
+  <g class="badge b3"><circle cx="425" cy="140" r="11"/><text x="425" y="144" text-anchor="middle">3</text></g>
+  <g class="badge b4"><circle cx="790" cy="262" r="11"/><text x="790" y="266" text-anchor="middle">4</text></g>
+  <g class="badge b5"><circle cx="390" cy="210" r="11"/><text x="390" y="214" text-anchor="middle">5</text></g>
+  <g class="badge b6"><circle cx="430" cy="300" r="11"/><text x="430" y="304" text-anchor="middle">6</text></g>
+</svg>

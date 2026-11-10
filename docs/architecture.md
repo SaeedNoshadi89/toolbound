@@ -14,9 +14,10 @@ src/toolbound/
     paths.py       the safe path language
     shaping.py     output pipeline: project, redact, limit, budget
     budget.py      ByteEstimator, canonical JSON
-    approval.py    PendingApproval, grants bound to the exact call
-    signing.py     HMAC tokens (cursors, grants)
-    ratelimit.py   per-process sliding windows
+    approval.py    encrypted approval requests, grants bound to the exact call
+    signing.py     HMAC-signed tokens (grants) and AES-GCM sealed tokens (cursors,
+                   approval requests), with per-purpose derived keys
+    ratelimit.py   per-process, thread-safe sliding windows (idle callers forgotten)
     pyschema.py    JSON Schema from Python type hints
     exposure.py    ToolDefinition, grouped strategy
     gateway.py     the pipeline that ties everything together
@@ -31,8 +32,8 @@ src/toolbound/
   cli.py           validate / preview contracts
 ```
 
-**Dependency rule:** `core` imports only the standard library, `jsonschema`, and other
-`core` modules. Two lazy, function-level imports wire defaults (`SecureTransport` when no
+**Dependency rule:** `core` imports only the standard library, `jsonschema`,
+`cryptography` (AES-GCM for sealed tokens), and other `core` modules. Two lazy, function-level imports wire defaults (`SecureTransport` when no
 transport is given, and the loader for `Gateway.load`). `tests/test_architecture.py`
 enforces this, and also imports the core with `httpx` blocked.
 
@@ -68,7 +69,7 @@ sequenceDiagram
     alt destructive and no grant
         Gateway-->>Adapter: approval_required (+ PendingApproval for host)
         Adapter-->>Human: summary
-        Human-->>Gateway: resume(pending, approved_by)
+        Human-->>Gateway: resume(token, ctx, approved_by)
     end
     Gateway->>Gateway: claim call_id, build URL, URL policy
     Gateway->>Transport: HttpRequest
@@ -98,3 +99,22 @@ sequenceDiagram
 - **Signed state instead of server state.** Cursors and grants are self-contained HMAC
   tokens, so the gateway needs no session storage. Only single-use enforcement needs the
   `StateStore`.
+
+## Concurrency and deployment model
+
+- **Event loops.** A `Gateway` may be used from several event loops (for example FastAPI
+  test clients, or `SyncGateway` in worker threads). Objects bound to a loop
+  (`httpx.AsyncClient`s in `SecureTransport`, per-service `asyncio.Semaphore`s) are created
+  per loop and released when the loop is garbage-collected.
+- **Threads.** `MemoryStateStore` and `RateLimiter` use `threading.Lock`, not asyncio locks:
+  their critical sections never await.
+- **CPU-heavy work.** Decoding and shaping bodies over 256 KB run in `asyncio.to_thread`, and
+  budget trimming has a fixed work cap, so a hostile response cannot stall the loop.
+- **Processes and workers.** Cursors and approval tokens are stateless (sealed with the
+  gateway secret), so they work on any worker that shares the secret. Single-use claims
+  (approvals, call ids) need a shared `StateStore`. Rate limits are per process.
+- **At-most-once writes.** A call id is claimed *before* execution. This trades
+  retry-ability for safety: a failed write is never repeated with the same id. Uncertain
+  outcomes are reported as `outcome_unknown`.
+
+Threats and assumptions behind these choices: [threat model](security/threat-model.md).

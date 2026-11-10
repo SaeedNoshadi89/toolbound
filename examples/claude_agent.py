@@ -70,7 +70,7 @@ def build_gateway(base_url: str) -> Gateway:
         ),
     )
 
-    @gateway.tool
+    @gateway.tool(effect="read")
     def count_by_label(labels: list[str]) -> dict[str, int]:
         """Count how often each label occurs in a list of label names."""
         counts: dict[str, int] = {}

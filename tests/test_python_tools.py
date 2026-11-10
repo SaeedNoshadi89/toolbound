@@ -23,7 +23,7 @@ from toolbound import (
 async def test_decorator_infers_schema_and_validates(make_gateway, ctx):
     gw = make_gateway()
 
-    @gw.tool
+    @gw.tool(effect="read")
     def search_docs(
         query: Annotated[str, "Search text", {"maxLength": 100}],
         limit: int = 5,
@@ -52,7 +52,7 @@ async def test_decorator_infers_schema_and_validates(make_gateway, ctx):
 async def test_ctx_and_bound_values_injected(make_gateway, ctx):
     gw = make_gateway()
 
-    @gw.tool(bind={"tenant": "ctx.tenant"})
+    @gw.tool(effect="read", bind={"tenant": "ctx.tenant"})
     async def whoami(ctx: ExecutionContext, tenant: str) -> dict:
         """Return the caller."""
         return {"actor": ctx.actor, "tenant": tenant}
@@ -72,7 +72,7 @@ async def test_authorization_applies_to_python_tools(make_gateway, ctx):
 
     gw = make_gateway(authorize=policy)
 
-    @gw.tool
+    @gw.tool(effect="read")
     def secret() -> dict:
         """Secret."""
         calls.append(1)
@@ -87,9 +87,10 @@ async def test_output_shaping_and_budget_apply(make_gateway, ctx):
     gw = make_gateway()
 
     @gw.tool(
+        effect="read",
         output=Output(
             shape={"id": "id", "text": "text"}, required=("id",), max_tokens=100, continuation=True
-        )
+        ),
     )
     def list_docs() -> list[dict]:
         """List documents."""
@@ -105,7 +106,7 @@ async def test_output_shaping_and_budget_apply(make_gateway, ctx):
 async def test_handler_exceptions_do_not_leak(make_gateway, ctx, caplog):
     gw = make_gateway()
 
-    @gw.tool
+    @gw.tool(effect="read")
     def boom() -> dict:
         """Fails."""
         raise RuntimeError("database password is hunter2")
@@ -118,7 +119,7 @@ async def test_handler_exceptions_do_not_leak(make_gateway, ctx, caplog):
 async def test_handler_can_raise_safe_tool_failure(make_gateway, ctx):
     gw = make_gateway()
 
-    @gw.tool
+    @gw.tool(effect="read")
     def lookup(id: str) -> dict:
         """Look up."""
         raise ToolFailure(ErrorCode.UPSTREAM_ERROR, f"record {id} not found", retryable=False)
@@ -130,7 +131,7 @@ async def test_handler_can_raise_safe_tool_failure(make_gateway, ctx):
 async def test_timeout(make_gateway, ctx):
     gw = make_gateway()
 
-    @gw.tool(timeout=0.05)
+    @gw.tool(effect="read", timeout=0.05)
     async def slow() -> dict:
         """Slow."""
         await asyncio.sleep(1)
@@ -143,7 +144,7 @@ async def test_timeout(make_gateway, ctx):
 async def test_sync_handler_runs_in_thread(make_gateway, ctx):
     gw = make_gateway()
 
-    @gw.tool
+    @gw.tool(effect="read")
     def blocking() -> dict:
         """Blocking."""
         time.sleep(0.05)
@@ -156,7 +157,7 @@ async def test_sync_handler_runs_in_thread(make_gateway, ctx):
 async def test_non_json_result_rejected(make_gateway, ctx):
     gw = make_gateway()
 
-    @gw.tool
+    @gw.tool(effect="read")
     def weird() -> object:
         """Weird."""
         return {"when": object()}
@@ -171,6 +172,7 @@ async def test_rate_limit_applies(make_gateway, ctx):
         PythonTool(
             name="ping",
             description="Ping.",
+            effect="read",
             handler=lambda: {"pong": True},
             rate_limit=RateLimit(calls=1, per_seconds=60),
         )
@@ -184,33 +186,38 @@ def test_registration_errors(make_gateway):
     gw = make_gateway()
     with pytest.raises(ConfigurationError):
 
-        @gw.tool
+        @gw.tool(effect="read")
         def untyped(x):  # type: ignore[no-untyped-def]
             """No hints."""
 
     with pytest.raises(ConfigurationError):
         gw.register(
             PythonTool(
-                name="bad", description="d", input={"a": {"type": "string"}}, handler=lambda b: b
+                name="bad",
+                description="d",
+                effect="read",
+                input={"a": {"type": "string"}},
+                handler=lambda b: b,
             )
         )
     with pytest.raises(ConfigurationError):
-        gw.register(PythonTool(name="no desc", description="d", handler=lambda: 1))
+        gw.register(PythonTool(name="no desc", description="d", effect="read", handler=lambda: 1))
     with pytest.raises(ConfigurationError):
-        gw.register(PythonTool(name="x", description="", handler=lambda: 1))
+        gw.register(PythonTool(name="x", description="", effect="read", handler=lambda: 1))
 
-    @gw.tool
+    @gw.tool(effect="read")
     def dup() -> dict:
         """Dup."""
         return {}
 
     with pytest.raises(ConfigurationError):
-        gw.register(PythonTool(name="dup", description="d", handler=lambda: 1))
+        gw.register(PythonTool(name="dup", description="d", effect="read", handler=lambda: 1))
     with pytest.raises(ConfigurationError):
         gw.register(
             PythonTool(
                 name="r",
                 description="d",
+                effect="read",
                 input={"cursor": {"type": "string"}},
                 handler=lambda cursor: 1,
             )

@@ -6,107 +6,107 @@ well-typed tool. It validates every model call, enforces **your** authorization 
 network rules, asks a human before destructive actions, and shapes the response into
 small, bounded, honest output before it reaches the model.
 
-It is for developers building agents in any domain (support, finance, legal, DevOps,
-internal tools) who want the model to *use* APIs without ever *choosing* URLs, credentials,
-tenants or policy.
+![How a tool call flows: the user signs in to your app, the model picks a tool, Toolbound validates, binds trusted values, authorizes, asks for approval when needed, executes only checked requests, and returns a small result](https://raw.githubusercontent.com/SaeedNoshadi89/toolbound/main/docs/images/how-a-tool-call-flows.svg)
 
-```text
-model says:  get_issue({"issue_number": 42})
-toolbound:   validate → authorize(ctx) → GET https://api.github.com/repos/acme/widgets/issues/42
-             (owner/repo/token from trusted code) → keep 5 allowlisted fields → ≤300 tokens
-model gets:  {"ok":true,"data":{"number":42,"title":"…","state":"open","author":"bob","labels":["bug"]},
-              "meta":{"truncated":false,"source":{"service":"github","operation":"get_issue","status":200}}}
-```
+1. The user signs in to **your app**, which builds a trusted `ExecutionContext` (who, which
+   tenant, which permissions).
+2. Your agent loop shows the model only the tools this user may use.
+3. The model asks for a tool with arguments. Your app passes the call to
+   `gateway.call(name, args, ctx=ctx)`.
+4. Toolbound checks it (schema, trusted values, scopes, your policy, rate limit, replay) and
+   sends only a checked request to an allowlisted API, or runs your Python function.
+5. The response is cut down to the fields you allowed, within a token budget, and returned
+   with a note of what was left out.
+6. Destructive calls stop at `approval_required`. Nothing runs until a human approves the
+   exact call.
 
-> **Status: alpha (0.1.0).** The core is complete and heavily tested, but the public API may
-> still change before 1.0 (see [Versioning](#roadmap-and-versioning)). The package name
-> `toolbound` was free on PyPI on 2026-11-10; it has **not been published yet**.
+> **Status: alpha (0.2.0, unreleased).** 0.2 is a security-hardening release of 0.1; see the
+> [changelog](https://github.com/SaeedNoshadi89/toolbound/blob/main/CHANGELOG.md). The public API
+> may still change before 1.0. Not yet published to PyPI.
 
 ---
 
 ## Contents
 
+- [Why we built this](#why-we-built-this)
 - [What it is, and what it is not](#what-it-is-and-what-it-is-not)
-- [Features and non-goals](#features-and-non-goals)
 - [Install](#install)
 - [Quickstart](#quickstart)
 - [A complete example](#a-complete-example)
 - [Security model](#security-model)
 - [Customizing input and output](#customizing-input-and-output)
-- [Agent integrations](#agent-integrations)
+- [Agent and web integrations](#agent-and-web-integrations)
 - [Architecture](#architecture)
 - [Benchmarks](#benchmarks)
 - [Development](#development)
 - [Roadmap and versioning](#roadmap-and-versioning)
+
+## Why we built this
+
+Agents become useful when they can call real APIs. The quickest way to get there is a
+generic `http_request(url, method, headers, body)` tool, or a thin wrapper around each
+endpoint where the model fills in the URL and ids. That works in a demo and fails in
+production. The model now decides *which customer's data* it touches, *which host* it
+calls, and *whether* to delete something. A prompt injection hidden in one API response is
+enough to steer it.
+
+**A real example from this repository.** [`examples/fastapi_app.py`](https://github.com/SaeedNoshadi89/toolbound/blob/main/examples/fastapi_app.py)
+and [`examples/langgraph_agent.py`](https://github.com/SaeedNoshadi89/toolbound/blob/main/examples/langgraph_agent.py)
+are a support agent for an issue tracker. One deployment serves many customer
+organizations. It has two tools: `list_issues` and `delete_comment` (for removing spam).
+Alice works for `acme`, and Bob works for `globex` with read-only access.
+
+```mermaid
+flowchart LR
+    subgraph without["Without Toolbound"]
+        direction TB
+        m1["Model"] -->|"generic http_request(url, method)"| f1["Your code forwards it"]
+        f1 --> u1[("Any URL the model writes:<br/>/repos/globex/… (another customer)<br/>169.254.169.254 (cloud credentials)<br/>DELETE … (no one asked)")]
+        u1 -->|"raw JSON: 25,936 tokens for 30 issues"| m1
+    end
+    subgraph with["With Toolbound"]
+        direction TB
+        m2["Model"] -->|"delete_comment(comment_id: 7)"| g["Toolbound gateway"]
+        g -->|"owner = Alice's tenant (from login)<br/>scopes + policy · approval first"| u2[("tracker API<br/>/repos/acme/widgets/…")]
+        u2 -->|"shaped: 2,717 tokens, ids kept"| m2
+    end
+    without ~~~ with
+```
+
+| In the example | Generic HTTP tool | Toolbound | Verified by |
+|---|---|---|---|
+| Whose data? | The model writes `/repos/globex/…` | The owner comes from Alice's login. Passing it as an argument fails with `invalid_arguments` | `tests/integrations/test_fastapi.py::test_tenant_comes_from_auth_not_body` |
+| Internal hosts, cloud metadata | Reachable if the model asks | Only allowlisted hosts. Every DNS answer is checked and the connection is pinned to it | `tests/security/test_ssrf.py`, `test_hardening.py` |
+| Deleting a comment | Runs immediately | Bob does not even see the tool. Alice's call waits for *her* decision on a channel the agent cannot use, runs once, and cannot be replayed, approved by Bob, or revived after a "no" | `test_fastapi.py::test_human_approval_runs_exactly_once`, `::test_agent_cannot_approve_its_own_request`, `::test_other_user_cannot_see_or_approve` |
+| A timeout on the delete | Model sees "retry" and may delete twice | `outcome_unknown`, not retryable. The same tool-call id never runs twice | `tests/security/test_unsafe_retries.py` |
+| Response size | 25,936 tokens for 30 issues | 2,717 tokens with the fields you chose and the ids kept | [`benchmarks/`](https://github.com/SaeedNoshadi89/toolbound/blob/main/docs/benchmarks.md) |
+| Credentials, cookies | The model or the prompt may see them | Contracts hold only credential names. Echoed secrets are scrubbed, and upstream cookies are never stored or shared between users | `test_credentials.py`, `test_isolation.py::test_c1_*` |
+
+Toolbound does not make the model trustworthy. It makes the *tool layer* enforce your rules
+whatever the model asks for, and it returns less untrusted text for the model to be
+steered by.
 
 ## What it is, and what it is not
 
 | | |
 |---|---|
 | **A Python library (SDK)** | Yes. It runs inside your application process. `pip install` and import it. |
-| **A contract format** | Yes. A versioned YAML/JSON format for approved operations ([reference](docs/contracts.md)), so contracts can be reviewed like code and reused by future runtimes. |
-| **A hosted REST API / gateway service** | No. Nothing to deploy. (An MCP-over-HTTP server that can run as an isolated gateway is on the [roadmap](#roadmap-and-versioning).) |
-| **An MCP server** | Not yet. MCP is planned as an *adapter* (v0.2) over the same core and contracts, not as the core itself. |
-| **Provider plugins** | Small optional adapters for the Anthropic and OpenAI tool formats ship today. They import no provider SDK and contain no security logic. |
-| **An agent framework** | No. Toolbound is the *tool layer*. Use it with your own loop, the Anthropic/OpenAI SDKs, LangGraph, or anything else ([integrations](docs/integrations.md)). |
+| **A contract format** | Yes. A versioned YAML/JSON format for approved operations ([reference](https://github.com/SaeedNoshadi89/toolbound/blob/main/docs/contracts.md)), reviewable like code. |
+| **A hosted gateway service** | No. Nothing to deploy. |
+| **An MCP server** | Not yet. A recipe is in the [integrations guide](https://github.com/SaeedNoshadi89/toolbound/blob/main/docs/integrations.md); a packaged adapter is planned. |
+| **Provider adapters** | Small optional adapters for the Anthropic and OpenAI tool formats. They import no provider SDK and contain no security logic. |
+| **An agent framework** | No. Toolbound is the *tool layer*. Use it with your own loop, the Anthropic/OpenAI SDKs, LangGraph, FastAPI, or anything else. |
 | **A sandbox for Python code** | No. Python tools are **trusted developer code** and run with your application's privileges. |
 | **A fact checker** | No. Schema validation proves *shape*, not *truth*. |
 
-## Features and non-goals
-
-**Features (implemented in 0.1)**
-
-- **One pipeline for every tool.** REST operations and Python functions both go through:
-  argument validation → trusted bindings → scopes → your `authorize()` → rate limit →
-  human approval → replay check → execution → output shaping → structured result.
-- **Narrow, generated tools.** The model sees only a name, a description and a closed JSON
-  Schema (`additionalProperties: false` everywhere). Unknown arguments are rejected, never
-  ignored.
-- **Trusted bindings.** Tenant, user, repository and similar values come from the
-  `ExecutionContext` and are *not part of the model's schema*, so they cannot be forged.
-- **Default-deny policy.** A `Gateway` cannot be created without an `authorize=` hook;
-  required scopes also hide tools from users who lack them.
-- **Network security.** HTTPS-only by default, host/port allowlists, strict path encoding,
-  DNS resolution with **every** address checked and the connection **pinned** to the checked
-  IP (TLS still verifies the real host name), private/link-local/metadata ranges blocked
-  unless explicitly trusted, redirects off by default and re-checked per hop with
-  credentials dropped across origins, proxy variables ignored, size caps on decompressed
-  bodies, and total deadlines.
-- **Credential isolation.** Contracts reference credential *names*; values come from a
-  `CredentialProvider` (environment, vault, per-user OAuth). Any credential the upstream echoes
-  back is scrubbed from results.
-- **Human approval bound to the exact call.** Destructive tools return
-  `approval_required`. Grants are HMAC-signed, expire, can be used once, and are bound to
-  actor, tenant, tool, contract fingerprint and validated arguments.
-- **Replay and idempotency safeguards.** Repeated provider call ids never execute a write
-  twice. Non-idempotent requests are never retried automatically. Idempotency keys stay
-  stable across retries.
-- **Output shaping as a first-class feature.** Allowlist projection with a tiny safe path
-  language (`user.login`, `labels[].name`), nested shapes, renames, transforms, defaults,
-  per-field and global item/character limits, key and secret-pattern redaction, PII hooks,
-  output schema checks (`strict` or `warn`), token budgets, and `required` evidence fields
-  that are never silently dropped.
-- **Transparent incompleteness.** Every result says what was left out and why
-  (`omitted: [{path, reason, count}]`), how many items came back, and offers a signed
-  `next_cursor` when more data exists.
-- **Pagination.** Upstream cursor, `Link` header and page-number pagination, plus local
-  continuation when a budget trims a list. Cursors are opaque, signed, and bound to tool,
-  user and arguments.
-- **Declarative or code-first.** YAML/JSON contracts validated against a published
-  meta-schema, a fully typed Python API, and `@gateway.tool` for Python functions (schema
-  inferred from type hints).
-- **Provider adapters.** Anthropic Messages and OpenAI Chat Completions / Responses formats,
-  including helpers that run a whole turn of tool calls.
-- **Observability without payloads.** Structured events (no argument or body values) for
-  your logging/metrics.
-
-**Deliberate non-goals:** agent loops and planning, generic summarization of upstream data,
-verifying that data is true, sandboxing Python, running as a hosted service, GraphQL/gRPC/
-streaming responses (for now), and activating OpenAPI specs automatically.
+**Deliberate non-goals:** agent loops and planning, summarizing upstream data, verifying
+that data is true, sandboxing Python, running as a hosted service, GraphQL/gRPC/streaming
+responses (for now), and activating OpenAPI specs automatically.
 
 ## Install
 
-Requires Python **3.11–3.15**. Runtime dependencies: `httpx` and `jsonschema`.
+Requires Python **3.11–3.15**. Runtime dependencies: `httpx`, `jsonschema` and
+`cryptography`.
 
 Until the first PyPI release, install from GitHub:
 
@@ -121,7 +121,7 @@ Optional extras: `yaml` (YAML contracts), `tiktoken` (tokenizer-based budgets).
 ## Quickstart
 
 One safe, shaped tool over the public GitHub API (no token needed). This is
-[`examples/quickstart.py`](examples/quickstart.py):
+[`examples/quickstart.py`](https://github.com/SaeedNoshadi89/toolbound/blob/main/examples/quickstart.py):
 
 ```python
 import asyncio
@@ -292,7 +292,7 @@ async def main():
         "delete_customer", {"customer_id": "cus_12345678"}, ctx=ctx, call_id="toolu_01"
     )
     print(pending.error.code)  # approval_required (nothing sent yet)
-    # ... show pending.approval.summary to a human; if they approve:
+    # ... show pending.approval (target, arguments, summary) to a human; if they approve:
     done = await gateway.resume(
         pending.approval, ctx=ctx, approved_by="user_123", call_id="toolu_01"
     )
@@ -306,56 +306,54 @@ More runnable examples, all offline except where noted:
 
 | Example | Shows |
 |---|---|
-| [`quickstart.py`](examples/quickstart.py) | public API, bound parameters, shaping, a blocked argument (network) |
-| [`two_services.py`](examples/two_services.py) | two unrelated APIs from YAML, grouped tools, `Link` pagination (network) |
-| [`blocked_requests.py`](examples/blocked_requests.py) | forged tenant, injected URL, type confusion, redirect to cloud metadata, untrusted private address |
-| [`approval_flow.py`](examples/approval_flow.py) | approval, single-use grants, replay and argument-swap rejection |
-| [`custom_python_tool.py`](examples/custom_python_tool.py) | `@gateway.tool`, business policy, budgets, continuation |
-| [`pagination.py`](examples/pagination.py) | upstream pagination + token budgets, no items lost, tampered cursor |
-| [`legal_retrieval.py`](examples/legal_retrieval.py) | Persian text, required citation fields, `overflow="reject"` |
-| [`claude_agent.py`](examples/claude_agent.py) | full Claude agent loop with approvals (calls the paid API) |
+| [`fastapi_app.py`](https://github.com/SaeedNoshadi89/toolbound/blob/main/examples/fastapi_app.py) | per-request context from auth, tool API, approvals across two HTTP requests, user isolation |
+| [`langgraph_agent.py`](https://github.com/SaeedNoshadi89/toolbound/blob/main/examples/langgraph_agent.py) | LangGraph graph with approvals through `interrupt()`, safe node re-runs |
+| [`quickstart.py`](https://github.com/SaeedNoshadi89/toolbound/blob/main/examples/quickstart.py) | public API, bound parameters, shaping, a blocked argument (network) |
+| [`two_services.py`](https://github.com/SaeedNoshadi89/toolbound/blob/main/examples/two_services.py) | two unrelated APIs from YAML, grouped tools, `Link` pagination (network) |
+| [`blocked_requests.py`](https://github.com/SaeedNoshadi89/toolbound/blob/main/examples/blocked_requests.py) | forged tenant, injected URL, type confusion, redirect to cloud metadata, untrusted private address |
+| [`approval_flow.py`](https://github.com/SaeedNoshadi89/toolbound/blob/main/examples/approval_flow.py) | approval, single-use grants, replay and argument-swap rejection |
+| [`custom_python_tool.py`](https://github.com/SaeedNoshadi89/toolbound/blob/main/examples/custom_python_tool.py) | `@gateway.tool`, business policy, budgets, continuation |
+| [`pagination.py`](https://github.com/SaeedNoshadi89/toolbound/blob/main/examples/pagination.py) | upstream pagination + token budgets, no items lost, tampered cursor |
+| [`legal_retrieval.py`](https://github.com/SaeedNoshadi89/toolbound/blob/main/examples/legal_retrieval.py) | Persian text, required citation fields, `overflow="reject"` |
+| [`claude_agent.py`](https://github.com/SaeedNoshadi89/toolbound/blob/main/examples/claude_agent.py) | full Claude agent loop with approvals (calls the paid API) |
 
 ## Security model
 
 Toolbound treats **everything the model produces** (tool choice, arguments, cursors) and
 **everything upstream APIs return** as untrusted. Trusted inputs are your contracts, your
 code, and the `ExecutionContext` your application builds after authenticating the user.
-The four layers are deliberately separate:
 
-| Layer | Guarantees | Does **not** guarantee |
+| Layer | Enforced by Toolbound | Not guaranteed |
 |---|---|---|
-| Structural validation | arguments and responses have the declared shape | permission, truth |
-| Authorization | this actor/tenant may run this tool on these arguments (your hook) | network safety |
-| Network security | requests reach only allowed hosts/ports/addresses; credentials don't leak across origins | that the upstream API is itself safe |
-| Factual verification | nothing: out of scope | — |
+| Structural validation | arguments match a closed schema; unknown arguments fail | permission, truth |
+| Authorization | scopes and your `authorize()` hook run before anything executes | the correctness of your policy |
+| Effects and approval | `DELETE` is destructive and `POST`/`PUT`/`PATCH` are writes unless declared otherwise. Destructive calls need a human approval tied to the exact actor, tenant, tool, arguments and trusted values, usable once | that the approved action is wise |
+| Replay and retries | a tool-call id runs a write at most once; only declared reads (or calls with an idempotency key) are retried automatically; if any attempt of a write may have reached the upstream, the result is `outcome_unknown`, not "retryable" | exactly-once delivery across a crash or a non-shared `StateStore` |
+| Network | allowlisted hosts and ports, HTTPS by default, every DNS answer checked and the connection pinned to it, redirects re-checked, credentials dropped across origins, no cookie jar, no proxy variables | network paths outside your process |
+| Output | allowlisted fields, redaction (in linear time), limits and budgets, with every omission reported | that redaction catches every secret or fragment of one |
 
-**Default-deny behavior:** unregistered tools are unknown; hidden tools look identical to
-unknown ones; unknown arguments fail; a missing context value fails closed; plain HTTP,
-private addresses, redirects and non-JSON content are refused unless the contract allows
-them; destructive tools need approval.
+**What it cannot do.** It cannot stop prompt injection from *influencing* the model; it
+limits what an influenced model can do. It cannot sandbox Python tools. Replay protection
+is per process unless you provide a shared `StateStore`. Please read the
+**[threat model](https://github.com/SaeedNoshadi89/toolbound/blob/main/docs/security/threat-model.md)**
+and the [security guide](https://github.com/SaeedNoshadi89/toolbound/blob/main/docs/security.md)
+before deploying. Report vulnerabilities privately:
+**[SECURITY.md](https://github.com/SaeedNoshadi89/toolbound/blob/main/SECURITY.md)**.
 
-**Limitations you must know about.** Toolbound cannot stop a model from being *influenced*
-by text in API responses (prompt injection). It limits what that influence can do: less
-untrusted text through allowlists, no way for results to change tools or policy, and
-approval for dangerous actions. It cannot see sidecar proxies or service meshes, and it
-cannot protect against an upstream API that itself fetches URLs. Replay protection is
-per-process unless you supply a shared `StateStore`. Python tools are not sandboxed.
-
-**Hardening checklist:** run agents behind an egress firewall; set a persistent `secret`
-from your vault; use a shared `StateStore` (e.g. Redis) with multiple workers; give each
-user their own credentials where the upstream supports it; prefer explicit `shape`s over
-pass-through; keep `allow_networks` narrow.
-
-Full threat model, controls and residual risks: **[docs/security.md](docs/security.md)**.
-Report vulnerabilities privately: **[SECURITY.md](SECURITY.md)**.
+**Production checklist:** set a persistent `Gateway(secret=...)` from your secret manager;
+use a shared `StateStore` (for example Redis) with more than one worker; run behind an
+egress firewall; give each user their own upstream credentials where possible; set
+`effect` honestly on every Python tool; prefer explicit `shape`s over pass-through.
 
 ## Customizing input and output
 
 **Input** is JSON Schema (draft 2020-12) with nested objects, arrays, enums, bounds,
-patterns, formats and defaults. Shorthand `{"name": {...}}` makes every property without a
+patterns and defaults. Shorthand `{"name": {...}}` makes every property without a
 `default` required. Arguments are placed into path, query or body automatically, or
 explicitly with `query=`/`body=`. `bind=` injects trusted values. Path values are strictly
-encoded, and `/`, `..` and encoded separators are rejected.
+encoded, and `/`, `..` and encoded separators are rejected. `format` keywords are only
+enforced when jsonschema's optional format packages are installed (Toolbound warns when
+they are not), so use `pattern`/`enum` for security-relevant constraints.
 
 **Output** is a pipeline you control per tool:
 
@@ -376,7 +374,7 @@ Output(
     max_tokens=2000,  # global limits and budget
     overflow="truncate",  # or "reject": never return partial data
     selectable=True,  # model may ask for a subset of fields (enum, not paths)
-    continuation=True,  # signed cursor to resume trimmed lists
+    continuation=True,  # encrypted cursor to resume trimmed lists
     redactors=(mask_emails,),  # your PII hooks, after key + secret-pattern redaction
     schema={...},
     schema_mode="strict",  # upstream response contract
@@ -384,11 +382,12 @@ Output(
 )
 ```
 
-Reference: [docs/contracts.md](docs/contracts.md) (every field, YAML and Python) and
-[docs/output.md](docs/output.md) (pipeline order, budgets, truncation vs rejection,
-pagination).
+Reference: [contracts](https://github.com/SaeedNoshadi89/toolbound/blob/main/docs/contracts.md)
+(every field, YAML and Python) and
+[output](https://github.com/SaeedNoshadi89/toolbound/blob/main/docs/output.md) (pipeline
+order, budgets, truncation vs rejection, pagination).
 
-## Agent integrations
+## Agent and web integrations
 
 ```python
 from toolbound.adapters import anthropic as tb
@@ -400,23 +399,31 @@ response = client.messages.create(
 batch = await tb.run_tool_calls(gateway, response, ctx)
 messages += [{"role": "assistant", "content": response.content}, batch.message]
 for pending in batch.pending_approvals:
-    ...  # ask a human, then gateway.resume(...)
+    ...  # show pending to a human; later: await gateway.resume(pending.token, ...)
 ```
 
-`toolbound.adapters.openai` does the same for Chat Completions and the Responses API. For
-LangGraph/LangChain, MCP, the Claude Agent SDK and plain loops, see the cookbook in
-**[docs/integrations.md](docs/integrations.md)**. Compatibility with a platform requires a
-real adapter. Toolbound only claims what ships with an adapter and tests.
+- **Anthropic / OpenAI**: `toolbound.adapters.anthropic` and `toolbound.adapters.openai`
+  (Chat Completions and Responses).
+- **FastAPI**: [`examples/fastapi_app.py`](https://github.com/SaeedNoshadi89/toolbound/blob/main/examples/fastapi_app.py),
+  tested in `tests/integrations/test_fastapi.py`. It creates the gateway in `lifespan`,
+  builds the context from authentication, keeps approval tokens server-side, and takes the
+  human's decision on a separate channel (session + CSRF) that the agent cannot use.
+- **LangGraph**: [`examples/langgraph_agent.py`](https://github.com/SaeedNoshadi89/toolbound/blob/main/examples/langgraph_agent.py),
+  tested in `tests/integrations/test_langgraph.py`. It passes the context through
+  `context=`, sends tool-call ids as `call_id`, and handles approvals through
+  `interrupt()`.
+- **MCP, Claude Agent SDK, plain loops**: recipes in the
+  [integrations guide](https://github.com/SaeedNoshadi89/toolbound/blob/main/docs/integrations.md).
 
 **Extending:** every outside dependency is a small `typing.Protocol` you can replace:
 `Transport`, `CredentialProvider`, `authorize`, `approver`, `TokenEstimator`, `Observer`,
-`StateStore`. See [docs/api.md](docs/api.md).
+`StateStore`. See the [API reference](https://github.com/SaeedNoshadi89/toolbound/blob/main/docs/api.md).
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    M[Model tool call<br/>untrusted] --> A[Adapter<br/>Anthropic / OpenAI / MCP*]
+    M[Model tool call<br/>untrusted] --> A[Adapter<br/>Anthropic / OpenAI / your loop]
     A --> G
     subgraph G[Gateway core - no HTTP or framework imports]
       V[Validate args<br/>closed JSON Schema] --> B[Bind trusted ctx values]
@@ -436,18 +443,17 @@ flowchart LR
     E --> A
 ```
 
-\* MCP adapter planned. The design is **lightweight hexagonal**: the core depends only on
-ports it defines, adapters plug in from outside, and a CI test fails if the core imports
-an HTTP client or AI framework. Rationale and rejected alternatives:
-[docs/adr/0001-architecture.md](docs/adr/0001-architecture.md) ·
-[docs/architecture.md](docs/architecture.md).
+The design is **lightweight hexagonal**: the core depends only on ports it defines,
+adapters plug in from outside, and a CI test fails if the core imports an HTTP client or AI
+framework. See the [ADR](https://github.com/SaeedNoshadi89/toolbound/blob/main/docs/adr/0001-architecture.md)
+and the [architecture notes](https://github.com/SaeedNoshadi89/toolbound/blob/main/docs/architecture.md).
 
 ## Benchmarks
 
-Measured locally with [`benchmarks/run.py`](benchmarks/run.py) (Apple M4 Pro, CPython
-3.13.15, tiktoken 0.14.0 `o200k_base` for token counts, 2026-11-10). Fixtures are
-**synthetic** data shaped like real APIs. No model was called. Full method and caveats:
-[docs/benchmarks.md](docs/benchmarks.md).
+Measured locally with `benchmarks/run.py` (Apple M4 Pro, CPython 3.13.15, tiktoken 0.14.0
+`o200k_base` for token counts, 2026-11-10). Fixtures are **synthetic** data shaped like
+real APIs. No model was called. Method and caveats:
+[benchmarks](https://github.com/SaeedNoshadi89/toolbound/blob/main/docs/benchmarks.md).
 
 | Case | Raw tokens | Shaped tokens | Items | Required fields kept |
 |---|---:|---:|---:|:---:|
@@ -455,51 +461,49 @@ Measured locally with [`benchmarks/run.py`](benchmarks/run.py) (Apple M4 Pro, CP
 | same, 1,500-token budget | 25,936 | 894 (−97%) | 10/30 + cursor | yes |
 | Persian legal search (20 rulings) | 23,587 | 4,910 (−79%) | 20/20 | yes |
 
-Tool definitions for 50 registered operations: `direct` 4,252 tokens, compact
-`grouped` 2,782 tokens. One generic `http_request` tool is only 67 tokens, but it gives
-the model unrestricted reach. Median added latency against a local HTTP server: **0.86 ms**
-per call (1.90 ms vs 1.03 ms raw httpx), including validation, DNS check and shaping.
-
-Fewer tokens can mean less evidence. Shaping removes fields by design, and every
-benchmark row reports whether the required fields survived.
+The baseline is the raw upstream JSON, which is what a generic HTTP tool returns. A
+hand-written minimal tool would also be small; Toolbound's point is that the small,
+checked version is the default. Median added latency against a local HTTP server:
+**0.578 ms** per call (0.86 ms in 0.1). A deliberately oversized 4.8 MB result is rejected
+in **0.118 s**, off the event loop (it was 8 s, on the event loop, in 0.1).
 
 ## Development
 
 ```bash
 git clone https://github.com/SaeedNoshadi89/toolbound && cd toolbound
-uv sync                       # creates .venv with dev tools
-uv run pytest                 # unit, security regression, property-based and example tests
-uv run ruff check . && uv run ruff format --check .
-uv run mypy                   # strict
+uv sync                        # creates .venv with dev tools
+uv run pytest                  # everything: unit, security, integration, examples
+uv run pytest -m security      # the security regression suite only
+uv run ruff check . && uv run ruff format --check . && uv run mypy
 TOOLBOUND_NETWORK_TESTS=1 uv run pytest   # also hits api.github.com / open-meteo
 uv run --with tiktoken python benchmarks/run.py
 ```
 
-CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs lint, strict typing, tests on
-Python 3.11–3.15 (Linux, macOS, Windows), a wheel build with a clean-install smoke test,
-and the offline examples. Contributions are welcome: see
-[CONTRIBUTING.md](CONTRIBUTING.md). Please report security issues privately via
-[SECURITY.md](SECURITY.md).
+CI runs lint, strict typing, tests on Python 3.11–3.15 (Linux, macOS, Windows), the
+security regression suite as its own job, a dependency vulnerability audit, a workflow
+audit, CodeQL, and a wheel build with a clean-install smoke test. A single `required
+checks` job fails if any of them fails. See
+[CONTRIBUTING.md](https://github.com/SaeedNoshadi89/toolbound/blob/main/CONTRIBUTING.md).
 
-More docs: [API reference](docs/api.md) · [FAQ & troubleshooting](docs/faq.md) ·
-[Release process](docs/releasing.md) · [Changelog](CHANGELOG.md).
+More docs: [API reference](https://github.com/SaeedNoshadi89/toolbound/blob/main/docs/api.md) ·
+[FAQ](https://github.com/SaeedNoshadi89/toolbound/blob/main/docs/faq.md) ·
+[Release process](https://github.com/SaeedNoshadi89/toolbound/blob/main/docs/releasing.md) ·
+[Changelog](https://github.com/SaeedNoshadi89/toolbound/blob/main/CHANGELOG.md).
 
 ## Roadmap and versioning
 
 | Version | Planned |
 |---|---|
-| **0.1** (this) | core pipeline, contracts (YAML/JSON + Python), secure transport, output shaping, approvals, Anthropic/OpenAI adapters, docs, benchmarks |
-| 0.2 | MCP server adapter (stdio + streamable HTTP, deployable as an isolated gateway), `discovery` exposure for large catalogs, OpenTelemetry extra, Redis `StateStore` |
-| 0.3 | OpenAPI → reviewed draft contracts (`toolbound import-openapi`), LangGraph/LangChain adapter |
-| later | OAuth helpers, multipart uploads, TypeScript runtime for the same contract format |
+| 0.1 | core pipeline, contracts, secure transport, output shaping, approvals, Anthropic/OpenAI adapters |
+| **0.2** (this) | security hardening: no cookie sharing, method-derived effects, encrypted approval requests and cursors, `outcome_unknown`, fail-closed replay store, bounded trimming, FastAPI/LangGraph examples, security regression suite and threat model |
+| 0.3 | MCP server adapter, Redis `StateStore`, tool search for large catalogs, OpenTelemetry extra |
+| later | OpenAPI → reviewed draft contracts, OAuth helpers, multipart uploads |
 
 Toolbound follows [Semantic Versioning](https://semver.org/). Before 1.0, minor releases
-may contain breaking changes, always listed in the [changelog](CHANGELOG.md). The contract
-file format is versioned separately (`version: 1`) and will keep loading in later releases
-or come with a migration tool.
+may contain breaking changes, always listed in the changelog. The contract file format is
+versioned separately (`version: 1`).
 
 ## License
 
-[Apache-2.0](LICENSE). Chosen because it is permissive like MIT and adds an explicit patent
-grant, which matters for companies adopting a security-sensitive dependency. This is not
-legal advice.
+[Apache-2.0](https://github.com/SaeedNoshadi89/toolbound/blob/main/LICENSE): permissive,
+with an explicit patent grant. This is not legal advice.
