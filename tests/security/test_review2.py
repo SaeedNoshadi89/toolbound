@@ -490,8 +490,16 @@ async def test_r15_missing_provider_ids_are_not_all_the_same(make_gateway, mock,
 
 
 def test_r1_token_patterns_start_only_at_run_boundaries():
-    """Without the lookbehind every '-eyJ' restarts a 4 KB scan (~8x slower)."""
+    """Without the lookbehind every '-eyJ' restarts a 4 KB scan (~25x slower than a
+    harmless string of the same size). Compared with a baseline, so machine speed
+    cancels out."""
     compiled = compile_output(Output(max_tokens=None, max_chars=20_000_000))
-    started = time.perf_counter()
-    process(compiled, {"a": "-eyJ" * 1_000_000}, estimator=ByteEstimator())
-    assert time.perf_counter() - started < 1.5
+
+    def timed(text: str) -> float:
+        started = time.perf_counter()
+        process(compiled, {"a": text}, estimator=ByteEstimator())
+        return time.perf_counter() - started
+
+    baseline = min(timed("-abc" * 1_000_000) for _ in range(2))
+    hostile = min(timed("-eyJ" * 1_000_000) for _ in range(2))
+    assert hostile < max(8 * baseline, 0.05), (hostile, baseline)
