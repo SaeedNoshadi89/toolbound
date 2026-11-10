@@ -47,9 +47,19 @@ class SyncGateway:
         )
 
     def resume(
-        self, pending: PendingApproval, *, ctx: ExecutionContext, approved_by: str
+        self,
+        request: PendingApproval | str,
+        *,
+        ctx: ExecutionContext,
+        approved_by: str,
+        call_id: str | None = None,
     ) -> ToolResult:
-        return self._run(self.gateway.resume(pending, ctx=ctx, approved_by=approved_by))
+        return self._run(
+            self.gateway.resume(request, ctx=ctx, approved_by=approved_by, call_id=call_id)
+        )
+
+    def deny(self, request: PendingApproval | str) -> PendingApproval:
+        return self._run(self.gateway.deny(request))
 
     def close(self) -> None:
         if self._loop.is_closed():

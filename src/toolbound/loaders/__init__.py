@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from jsonschema import Draft202012Validator
 
@@ -20,6 +20,7 @@ from toolbound.core.contracts import (
     Auth,
     BasicAuth,
     BearerAuth,
+    Effect,
     Field,
     FieldSpec,
     Limits,
@@ -183,7 +184,7 @@ def _operation(raw: dict[str, Any], service: Service) -> Operation:
         service=service,
         method=raw.get("method", "GET"),
         path=raw["path"],
-        effect=raw.get("effect", "read"),
+        effect=cast(Effect, raw.get("effect")),  # None: inferred from the method
         input=raw.get("input", {}),
         bind=raw.get("bind", {}),
         required_scopes=tuple(raw.get("required_scopes", ())),

@@ -21,6 +21,20 @@ class ToolboundError(Exception):
     """Base class for every exception raised by Toolbound."""
 
 
+class ToolboundWarning(UserWarning):
+    """A risky but legal configuration (for example an ephemeral signing key).
+
+    Turn these into errors in CI with ``-W error::toolbound.ToolboundWarning``.
+    """
+
+
+class StateStoreError(ToolboundError):
+    """A :class:`~toolbound.StateStore` could not record a claim.
+
+    Toolbound fails closed: the call is not executed.
+    """
+
+
 class ConfigurationError(ToolboundError):
     """A contract, tool, or gateway setting is invalid. Raised to the developer."""
 
@@ -45,6 +59,7 @@ class ErrorCode(StrEnum):
     UNSUPPORTED_CONTENT_TYPE = "unsupported_content_type"
     RESPONSE_TOO_LARGE = "response_too_large"
     RESULT_TOO_LARGE = "result_too_large"
+    OUTCOME_UNKNOWN = "outcome_unknown"
     INTERNAL_ERROR = "internal_error"
 
 
@@ -70,6 +85,7 @@ class ToolFailure(ToolboundError):
         http_status: int | None = None,
         details: dict[str, object] | None = None,
         retry_after: float | None = None,
+        request_sent: bool | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
@@ -78,10 +94,24 @@ class ToolFailure(ToolboundError):
         self.http_status = http_status
         self.details = details or {}
         self.retry_after = retry_after
+        #: ``False`` when the request certainly never reached the upstream (DNS,
+        #: connect, policy). ``None`` means it may have been sent.
+        self.request_sent = request_sent
 
 
 class NetworkBlocked(ToolFailure):
     """A request target violated the network policy."""
 
     def __init__(self, message: str) -> None:
-        super().__init__(ErrorCode.NETWORK_BLOCKED, message, retryable=False)
+        super().__init__(ErrorCode.NETWORK_BLOCKED, message, retryable=False, request_sent=False)
+
+
+class ApprovalInvalid(ToolFailure):
+    """An approval request or grant is forged, expired, reused, or for another call.
+
+    Raised by :meth:`Gateway.grant` (host code); :meth:`Gateway.call` returns it
+    as an ``approval_invalid`` result instead.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(ErrorCode.APPROVAL_INVALID, message, retryable=False)

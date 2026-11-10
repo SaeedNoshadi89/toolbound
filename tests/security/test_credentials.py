@@ -17,7 +17,7 @@ from toolbound import (
 )
 from toolbound.transport.mock import MockResponse
 
-from .conftest import SECRET
+from ..conftest import SECRET
 
 
 class Recorder:

@@ -17,7 +17,8 @@ _SIMPLE: dict[type, dict[str, Any]] = {
     int: {"type": "integer"},
     float: {"type": "number"},
     bool: {"type": "boolean"},
-    dict: {"type": "object"},
+    # A bare ``dict`` hint is a deliberate free-form object: say so explicitly.
+    dict: {"type": "object", "additionalProperties": True},
 }
 
 
@@ -100,7 +101,9 @@ def _schema_for(tp: Any, fn: str, name: str) -> dict[str, Any]:
             array["uniqueItems"] = True
         return array
     if origin is dict:
-        return {"type": "object"}
+        args = get_args(tp)
+        values = _schema_for(args[1], fn, name) if len(args) == 2 else True
+        return {"type": "object", "additionalProperties": values}
     if origin in (Union, types.UnionType):
         members = [a for a in get_args(tp) if a is not type(None)]
         nullable = len(members) != len(get_args(tp))

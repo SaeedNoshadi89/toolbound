@@ -72,6 +72,7 @@ CONTRACT_SCHEMA: dict[str, Any] = {
                         "max_request_bytes": {"type": "integer", "minimum": 1},
                         "max_response_bytes": {"type": "integer", "minimum": 1},
                         "max_concurrency": {"type": "integer", "minimum": 1},
+                        "total_timeout": {"type": "number", "exclusiveMinimum": 0},
                     },
                 },
                 "retry": {

@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: "17 5 * * 1" # weekly: catch newly published advisories in dependencies
 
 permissions:
   contents: read
@@ -12,8 +14,10 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
         with:
           python-version: "3.13"
       - run: uv sync --locked
@@ -34,21 +38,79 @@ jobs:
             python: "3.13"
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
         with:
           python-version: ${{ matrix.python }}
       - run: uv sync --locked
       - run: uv run pytest
 
+  security:
+    # The security regression suite (tests/security + framework isolation tests).
+    # Runs separately so a failure is impossible to miss; see CONTRIBUTING.md.
+    name: security regression suite
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          python-version: "3.13"
+      - run: uv sync --locked
+      - run: uv run pytest -m security -v --strict-markers
+      - name: The suite must not be empty
+        shell: bash
+        run: |
+          count=$(uv run pytest -m security --collect-only -q | grep -c "::" || true)
+          echo "security tests: $count"
+          test "$count" -ge 200
+
+  audit:
+    # Known vulnerabilities in runtime and development dependencies (PyPI advisory DB / OSV).
+    name: dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          python-version: "3.13"
+      - run: uv export --format requirements-txt --no-hashes --all-groups --no-emit-project > requirements-audit.txt
+      - run: uvx pip-audit==2.10.1 -r requirements-audit.txt --no-deps --disable-pip --strict
+      - name: Audit GitHub Actions workflows (zizmor)
+        run: uvx zizmor==1.32.0 --offline .github/workflows
+
+  dependency-review:
+    # Blocks pull requests that add dependencies with known vulnerabilities.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4
+        with:
+          fail-on-severity: moderate
+
   package:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
         with:
           python-version: "3.13"
       - run: uv build
+      - run: uvx twine==7.0.0 check --strict dist/*
       - name: Smoke-test the wheel in a clean environment
         run: |
           uv venv /tmp/smoke
@@ -56,16 +118,40 @@ jobs:
           /tmp/smoke/bin/python -c "import toolbound, toolbound.adapters.anthropic, toolbound.adapters.openai; print(toolbound.__version__)"
           /tmp/smoke/bin/toolbound schema > /dev/null
 
+  required:
+    # The single check to mark as "required" in branch protection: it fails unless
+    # every job above (including the security suite and the audit) succeeded.
+    name: required checks
+    if: always()
+    needs: [lint, test, security, audit, dependency-review, package]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify every required job passed
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS"
+          python3 - <<'EOF'
+          import json, os, sys
+          needs = json.loads(os.environ["RESULTS"])
+          bad = {k: v["result"] for k, v in needs.items()
+                 if v["result"] not in ("success", "skipped") or (k != "dependency-review" and v["result"] == "skipped")}
+          if bad:
+              sys.exit(f"failed or skipped jobs: {bad}")
+          EOF
+
   network:
     # Real HTTPS calls (api.github.com, api.open-meteo.com). Informational only.
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
         with:
           python-version: "3.13"
       - run: uv sync --locked
-      - run: uv run pytest tests/test_transport.py tests/test_examples.py
+      - run: uv run pytest tests/security/test_transport_ssrf.py tests/test_examples.py
         env:
           TOOLBOUND_NETWORK_TESTS: "1"

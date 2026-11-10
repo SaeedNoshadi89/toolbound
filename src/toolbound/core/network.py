@@ -32,6 +32,43 @@ _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _NAT64 = ipaddress.ip_network("64:ff9b::/96")
 _NAT64_LOCAL = ipaddress.ip_network("64:ff9b:1::/48")
 
+#: IANA special-purpose ranges that are never treated as public, independent of
+#: the running Python's ``ipaddress.is_global`` (whose answers changed across
+#: patch releases, e.g. CVE-2024-4032). Belt and braces with ``is_global``.
+_SPECIAL_PURPOSE = tuple(
+    ipaddress.ip_network(cidr)
+    for cidr in (
+        "0.0.0.0/8",
+        "10.0.0.0/8",
+        "100.64.0.0/10",
+        "127.0.0.0/8",
+        "169.254.0.0/16",
+        "172.16.0.0/12",
+        "192.0.0.0/24",
+        "192.0.2.0/24",
+        "192.88.99.0/24",
+        "192.168.0.0/16",
+        "198.18.0.0/15",
+        "198.51.100.0/24",
+        "203.0.113.0/24",
+        "224.0.0.0/4",
+        "240.0.0.0/4",
+        "::/128",
+        "::1/128",
+        "::ffff:0:0:0/96",
+        "64:ff9b:1::/48",
+        "100::/64",
+        "2001::/23",
+        "2001:db8::/32",
+        "3fff::/20",
+        "5f00::/16",
+        "fc00::/7",
+        "fe80::/10",
+        "fec0::/10",
+        "ff00::/8",
+    )
+)
+
 
 @dataclass(frozen=True, slots=True)
 class Target:
@@ -127,6 +164,8 @@ def is_public_ip(ip: IPAddress) -> bool:
     """True if ``ip`` is a globally routable unicast address."""
     embedded = _embedded_ipv4(ip)
     if embedded is not None and not is_public_ip(embedded):
+        return False
+    if any(ip in net for net in _SPECIAL_PURPOSE if net.version == ip.version):
         return False
     return bool(ip.is_global) and not ip.is_multicast and not ip.is_unspecified
 

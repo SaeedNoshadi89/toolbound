@@ -1,16 +1,18 @@
 # Integration cookbook
 
 Toolbound is the **tool layer** of an agent. It does not run the agent loop. These recipes
-show how to connect it to common loops. Only the Anthropic and OpenAI adapters ship in 0.1.
-Everything else is a short recipe using the public API, marked as such.
+show how to connect it to common loops and web frameworks. The Anthropic and OpenAI
+adapters ship as code; FastAPI and LangGraph are complete, tested examples; the rest are
+short recipes using the public API, marked as such.
 
 | Integration | Status |
 |---|---|
 | Anthropic Messages API | **adapter shipped** (`toolbound.adapters.anthropic`) |
 | OpenAI Chat Completions / Responses | **adapter shipped** (`toolbound.adapters.openai`) |
+| FastAPI | **tested example** ([`examples/fastapi_app.py`](../examples/fastapi_app.py), `tests/integrations/test_fastapi.py`) |
+| LangGraph | **tested example** ([`examples/langgraph_agent.py`](../examples/langgraph_agent.py), `tests/integrations/test_langgraph.py`) |
 | Plain custom loop | recipe below |
-| LangGraph / LangChain | recipe below; packaged adapter planned (v0.3) |
-| MCP (Claude Desktop, IDEs, any MCP client) | recipe below; packaged server planned (v0.2) |
+| MCP (Claude Desktop, IDEs, any MCP client) | recipe below; packaged server planned (v0.3) |
 | Claude Agent SDK | via MCP (recipe below) |
 
 ## Anthropic (manual loop)
@@ -75,30 +77,74 @@ async def on_tool_call(call_id, name, arguments):  # arguments: dict parsed from
     return result.to_json()  # the only thing the model should see
 ```
 
-## LangGraph / LangChain (recipe)
+## Approvals in multi-step apps
+
+Approval rarely happens inside the same function call. The approval request's `token` is
+**encrypted and authenticated** by the gateway, so you can store it in a database, send it
+to a browser, or keep it in a workflow checkpoint, and later call
+`gateway.resume(token, ctx=ctx, approved_by=...)` with the **live** context of the user who
+approves. Changing any part of the request breaks the token. A different actor or tenant
+gets `approval_invalid`. A token works only once, and only until it expires (default 10
+minutes, `Gateway(approval_ttl=...)`). Use the same `Gateway(secret=...)` on every worker.
+
+## FastAPI (tested example)
+
+[`examples/fastapi_app.py`](../examples/fastapi_app.py) is a tool-execution API for an
+agent backend:
+
+- the `Gateway` is created once in `lifespan` (with `secret=` from the environment) and
+  closed on shutdown;
+- a dependency authenticates the request and builds the `ExecutionContext`. Tenant, scopes
+  and bound values never come from the request body;
+- `POST /tools/{name}` (agent API key) runs a model tool call with its `call_id`. For a
+  destructive tool it returns the model-visible `approval_required` result and only an
+  opaque `approval_id`. The approval **token stays on the server**, so neither the agent
+  nor a prompt-injected model can approve its own request;
+- `GET /approvals` and `POST /approvals/{id}` are the **human** channel: a browser session
+  cookie plus a CSRF token. Agent keys are not accepted there. A rejection calls
+  `gateway.deny()`, so the request can never be approved later.
+
+`tests/integrations/test_fastapi.py` checks authentication, per-user tool lists, tenant
+binding, that the agent never sees the token and cannot approve, CSRF, single execution,
+isolation between users, final rejections, and restarts with new event loops.
+
+## LangGraph (tested example)
+
+[`examples/langgraph_agent.py`](../examples/langgraph_agent.py) builds the graph and the
+gateway **once**, and passes the trusted context per run with LangGraph's `context=`:
 
 ```python
-from langchain_core.tools import StructuredTool
-
-
-def as_langchain_tools(gateway, ctx):
-    def make(defn):
-        async def run(**kwargs):
-            return (await gateway.call(defn.name, kwargs, ctx=ctx)).to_json()
-
-        return StructuredTool.from_function(
-            coroutine=run,
-            name=defn.name,
-            description=defn.description,
-            args_schema=defn.input_schema,
-        )
-
-    return [make(d) for d in gateway.definitions(ctx)]
+app = build_graph(gateway, model)  # agent -> tools -> approve -> agent
+config = {"configurable": {"thread_id": thread_id}}
+state = await app.ainvoke(
+    {"messages": [HumanMessage(task)], "pending": []}, config, context=AgentContext(ctx)
+)
+if "__interrupt__" in state:  # a destructive call is waiting
+    question = state["__interrupt__"][0].value  # {"summary": ...}
+    state = await app.ainvoke(Command(resume=user_said_yes), config, context=AgentContext(ctx))
 ```
 
-Build the tools **per request** with the request's `ExecutionContext`, never once
-globally, so every user gets only their own tools and bindings. Verified with
-`langchain-core` 1.7.7, which accepts a JSON Schema dict as `args_schema`.
+Key points, all covered by `tests/integrations/test_langgraph.py`:
+
+- the `tools` node passes each tool call's `id` as `call_id`, so re-running the node (crash
+  recovery) cannot repeat a write;
+- calls that need approval are collected in state as **tokens only**, and a separate
+  `approve` node calls `interrupt()` for each. LangGraph re-runs a node from the top on
+  resume, so the node only acts after **all** decisions are in;
+- resuming under another user's context is refused, and a stray second resume executes
+  nothing.
+
+To use a real model, bind the tool definitions: `ChatAnthropic(model="claude-opus-5-5")
+.bind_tools(tool_specs(gateway, ctx))`, and return its `AIMessage` from the `agent` node.
+
+### Why not LangChain `StructuredTool`s?
+
+The 0.1 docs suggested wrapping each tool in a `StructuredTool`. Don't: a `StructuredTool`
+whose `args_schema` is a JSON Schema dict cannot receive the tool-call id
+(`InjectedToolCallId` is not injected; checked with `langchain-core` 1.7.7). Without the id,
+duplicate-call protection for writes is lost, and `approval_required` ends up in front of
+the model with no way to resume. The graph above reads `tool_calls` from the `AIMessage`
+directly and has neither problem.
 
 ## MCP (recipe until the packaged server ships)
 
@@ -131,6 +177,7 @@ async def call_tool(request_context, params):
 
 server = Server("toolbound", on_list_tools=list_tools, on_call_tool=call_tool)
 # run with the SDK's stdio or streamable-HTTP transport (see the MCP SDK docs)
+# pass params.meta / request ids as call_id if your client provides stable ids
 ```
 
 Notes:
@@ -141,7 +188,7 @@ Notes:
   return `approval_required`. Handle approval out of band, or keep destructive tools off
   MCP servers for now.
 - The MCP SDK's API has changed between major versions; a tested, packaged adapter with
-  pinned compatibility is planned for v0.2.
+  pinned compatibility is planned for v0.3.
 
 ## Claude Agent SDK
 

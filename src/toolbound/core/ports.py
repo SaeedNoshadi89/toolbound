@@ -36,6 +36,16 @@ class HttpRequest:
     connect_timeout: float
     max_response_bytes: int
 
+    def __repr__(self) -> str:
+        # Headers, body and query values can hold credentials: never print them.
+        base, _, query = self.url.partition("?")
+        names = sorted({k.lower() for k, _ in self.headers})
+        body = f"<{len(self.body)} bytes>" if self.body else None
+        return (
+            f"HttpRequest(method={self.method!r}, url={base + ('?…' if query else '')!r}, "
+            f"headers={names!r}, body={body})"
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class HttpResponse:
@@ -47,6 +57,12 @@ class HttpResponse:
     url: str
     elapsed_ms: float = 0.0
     extensions: Mapping[str, Any] = field(default_factory=dict)
+
+    def __repr__(self) -> str:
+        return (
+            f"HttpResponse(status={self.status}, url={self.url.partition('?')[0]!r}, "
+            f"body=<{len(self.body)} bytes>)"
+        )
 
 
 @runtime_checkable

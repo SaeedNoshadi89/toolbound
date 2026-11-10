@@ -39,8 +39,10 @@ safe, token-efficient tools, without adopting a particular agent framework or pr
 5. **Authorization belongs to the application.** The gateway refuses to start without an
    `authorize=` hook. It never decides business permissions itself.
 6. **Security is enforced in code, never in prompts.** Model output is untrusted. Approval
-   grants and cursors are HMAC-signed and bound to actor, tenant, tool and arguments, and
-   they travel through host code only.
+   grants are HMAC-signed and approval requests and cursors are encrypted (AES-GCM, since
+   0.2); all are bound to actor, tenant, tool and arguments. Grants and approval
+   requests travel through host code only; cursors pass through the model but cannot be
+   read or altered.
 
 ## Options considered
 

@@ -22,9 +22,15 @@ def get(obj: Any, key: str, default: Any = None) -> Any:
     return getattr(obj, key, default)
 
 
+def optional_id(value: Any) -> str | None:
+    """A provider tool-call id, or None when missing (never the string "None",
+    which would make every id-less call look like a duplicate of the first)."""
+    return None if value is None or value == "" else str(value)
+
+
 @dataclass(slots=True)
 class Call:
-    id: str
+    id: str | None
     name: str
     arguments: Any
     parse_error: str | None = None

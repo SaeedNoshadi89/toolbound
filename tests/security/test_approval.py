@@ -88,7 +88,7 @@ async def test_grant_bound_to_tool_and_contract(make_gateway, routed, ctx, mock)
     result = await gw.call("delete_comment_v2", {"comment_id": 5}, ctx=ctx, approval=token)
     assert result.error and result.error.code is ErrorCode.APPROVAL_INVALID
     # Same tool name, changed contract (different path) in a new gateway with the same key.
-    from .conftest import HMAC_KEY
+    from ..conftest import HMAC_KEY
 
     changed = Operation(
         name="delete_comment",

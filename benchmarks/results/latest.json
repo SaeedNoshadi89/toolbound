@@ -1,6 +1,6 @@
 {
   "environment": {
-    "toolbound": "0.1.0",
+    "toolbound": "0.2.0",
     "python": "3.13.15",
     "implementation": "CPython",
     "machine": "arm64",
@@ -172,24 +172,29 @@
   "pipeline": {
     "iterations": 500,
     "payload_bytes": 105902,
-    "median_ms": 1.173,
-    "p95_ms": 1.213
+    "median_ms": 0.911,
+    "p95_ms": 1.024
   },
   "end_to_end": {
     "iterations": 300,
     "raw_httpx_get_and_json": {
-      "median_ms": 1.034,
-      "p95_ms": 1.247
+      "median_ms": 0.864,
+      "p95_ms": 1.046
     },
     "toolbound_call_with_shaping": {
-      "median_ms": 1.898,
-      "p95_ms": 2.118
+      "median_ms": 1.442,
+      "p95_ms": 1.687
     },
-    "median_overhead_ms": 0.864
+    "median_overhead_ms": 0.578
   },
   "memory": {
     "input_items": 2000,
     "input_json_bytes": 7129934,
-    "peak_traced_bytes_during_shaping": 177959
+    "peak_traced_bytes_during_shaping": 178375
+  },
+  "worst_case_trim": {
+    "input_json_bytes": 4810891,
+    "seconds": 0.118,
+    "outcome": "result_too_large"
   }
 }

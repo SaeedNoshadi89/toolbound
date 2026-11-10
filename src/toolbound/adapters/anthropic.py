@@ -20,7 +20,7 @@ from toolbound.core.context import ExecutionContext
 from toolbound.core.exposure import Strategy
 from toolbound.core.gateway import Gateway
 
-from ._common import Call, ToolCallBatch, execute_calls, get, parse_json_arguments
+from ._common import Call, ToolCallBatch, execute_calls, get, optional_id, parse_json_arguments
 
 __all__ = ["AnthropicToolCallBatch", "run_tool_calls", "tool_calls", "tools"]
 
@@ -48,7 +48,7 @@ def tool_calls(message: Any) -> list[Call]:
         if get(block, "type") != "tool_use":
             continue
         arguments, error = parse_json_arguments(get(block, "input"))
-        calls.append(Call(str(get(block, "id")), str(get(block, "name")), arguments, error))
+        calls.append(Call(optional_id(get(block, "id")), str(get(block, "name")), arguments, error))
     return calls
 
 

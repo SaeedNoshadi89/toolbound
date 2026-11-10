@@ -34,6 +34,7 @@ gateway = Gateway(authorize=policy)
 
 
 @gateway.tool(
+    effect="read",
     bind={"tenant": "ctx.tenant"},  # tenant comes from the session, never from the model
     output=Output(
         shape={

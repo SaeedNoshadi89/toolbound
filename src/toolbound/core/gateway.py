@@ -11,17 +11,22 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import concurrent.futures
+import functools
 import inspect
 import json
 import logging
 import random
 import re
 import secrets
+import threading
 import time
+import warnings
+import weakref
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path as FsPath
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 from urllib.parse import urlencode, urljoin, urlsplit
 
 from .approval import ApprovalManager, PendingApproval
@@ -40,7 +45,14 @@ from .contracts import (
     Tool,
     resolve_binding,
 )
-from .errors import ConfigurationError, ErrorCode, NetworkBlocked, ToolFailure
+from .errors import (
+    ApprovalInvalid,
+    ConfigurationError,
+    ErrorCode,
+    NetworkBlocked,
+    ToolboundWarning,
+    ToolFailure,
+)
 from .exposure import Strategy, ToolDefinition, group_definitions
 from .network import build_url, check_url, same_origin
 from .observe import Event, NullObserver
@@ -64,12 +76,16 @@ from .result import ResultMeta, ToolError, ToolResult
 from .schema import RESERVED_ARGUMENTS, ArgumentValidator, normalize_input_schema
 from .shaping import CompiledOutput, ShapeResult, compile_output, process, shape_error_body
 from .signing import Signer, canonical_digest
-from .state import MemoryStateStore
+from .state import MemoryStateStore, claim_or_fail
 
 logger = logging.getLogger("toolbound")
 
-_CURSOR_PREFIX = "tbc1"
-_USER_AGENT = "toolbound/0.1"
+_CURSOR_PREFIX = "tbc2"
+_MAX_CURSOR = 4096
+#: Above this many bytes, output shaping runs in a worker thread so a large
+#: upstream response cannot stall the event loop.
+_OFFLOAD_BYTES = 256 * 1024
+_USER_AGENT = "toolbound/0.2"
 _REDIRECTS = frozenset({301, 302, 303, 307, 308})
 _REQUEST_ID_HEADERS = ("x-request-id", "x-github-request-id", "request-id", "x-amzn-requestid")
 _SAFE_ID = re.compile(r"^[A-Za-z0-9._:/-]{1,80}$")
@@ -159,9 +175,9 @@ class Gateway:
         self._approver = approver
         self._transport = transport
         self._owns_transport = transport is None
-        self._estimator: TokenEstimator = estimator or ByteEstimator()
-        self._observer: Observer = observer or NullObserver()
-        self._state: StateStore = state or MemoryStateStore()
+        self._estimator: TokenEstimator = estimator if estimator is not None else ByteEstimator()
+        self._observer: Observer = observer if observer is not None else NullObserver()
+        self._state: StateStore = state if state is not None else MemoryStateStore()
         self._signer = Signer(secret)
         self._approvals = ApprovalManager(self._signer, self._state, ttl_seconds=approval_ttl)
         self._visibility = visibility
@@ -173,8 +189,14 @@ class Gateway:
         self._rng = rng or random.Random()  # noqa: S311 - jitter, not crypto
         self._tools: dict[str, _Registered] = {}
         self._groups: dict[str, list[str]] = {}
-        self._semaphores: dict[str, asyncio.Semaphore] = {}
+        # asyncio primitives belong to one event loop; keep them per loop.
+        self._semaphores: weakref.WeakKeyDictionary[
+            asyncio.AbstractEventLoop, dict[str, asyncio.Semaphore]
+        ] = weakref.WeakKeyDictionary()
+        self._sem_lock = threading.Lock()
         self._rate = RateLimiter()
+        self._warned_ephemeral = False
+        self._executor: concurrent.futures.ThreadPoolExecutor | None = None
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -189,6 +211,9 @@ class Gateway:
         if self._transport is not None and self._owns_transport:
             await self._transport.aclose()
             self._transport = None
+        if self._executor is not None:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+            self._executor = None
 
     def _get_transport(self) -> Transport:
         if self._transport is None:
@@ -214,7 +239,7 @@ class Gateway:
         name: str | None = None,
         description: str | None = None,
         input: Mapping[str, Any] | None = None,
-        effect: Effect | str = Effect.READ,
+        effect: Effect | str | None = None,
         output: Output | None = None,
         bind: Mapping[str, Any] | None = None,
         required_scopes: Sequence[str] = (),
@@ -235,8 +260,8 @@ class Gateway:
                 name=name or fn.__name__,
                 description=description or doc.split("\n\n")[0].strip(),
                 input=dict(input) if input is not None else {},
-                effect=Effect(effect),
-                output=output or Output(),
+                effect=cast(Effect, None if effect is None else Effect(effect)),
+                output=output if output is not None else Output(),
                 bind=dict(bind or {}),
                 required_scopes=tuple(required_scopes),
                 tags=tuple(tags),
@@ -418,20 +443,59 @@ class Gateway:
 
     # ------------------------------------------------------------------ approvals
 
-    def grant(self, pending: PendingApproval, *, approved_by: str) -> str:
-        """Issue a single-use approval token for ``pending`` (host code only)."""
-        return self._approvals.grant(pending, approved_by=approved_by)
+    def pending_approval(self, request: PendingApproval | str) -> PendingApproval:
+        """Rebuild and verify a :class:`PendingApproval` from its ``token``.
+
+        Use it when an approval request comes back from storage, a browser or a
+        workflow engine. Raises :class:`~toolbound.ApprovalInvalid` if the token
+        is forged, altered, expired, or from another gateway secret.
+        """
+        return self._approvals.open(request)
+
+    def grant(self, request: PendingApproval | str, *, approved_by: str) -> str:
+        """Issue a single-use grant for a gateway-issued approval request (host code only).
+
+        ``request`` is a :class:`PendingApproval` or its ``token``. Only the
+        token is trusted: the other fields of a ``PendingApproval`` object are
+        ignored. Raises :class:`~toolbound.ApprovalInvalid` for a forged or
+        expired request.
+        """
+        return self._approvals.grant(request, approved_by=approved_by)
+
+    async def deny(self, request: PendingApproval | str) -> PendingApproval:
+        """Record that a human rejected a request; it can never be granted afterwards.
+
+        Raises :class:`~toolbound.ApprovalInvalid` for a forged or expired request.
+        """
+        return await self._approvals.deny(request)
 
     async def resume(
         self,
-        pending: PendingApproval,
+        request: PendingApproval | str,
         *,
         ctx: ExecutionContext,
         approved_by: str,
         call_id: str | None = None,
     ) -> ToolResult:
-        """Approve ``pending`` and execute it in one step (host code only)."""
-        token = self.grant(pending, approved_by=approved_by)
+        """Approve a request and execute it in one step (host code only).
+
+        The tool and arguments come from the verified request token, and the
+        call runs under the live ``ctx``, which must match the requesting actor
+        and tenant. Never raises for an invalid request: it returns an
+        ``approval_invalid`` result.
+        """
+        if not isinstance(ctx, ExecutionContext):
+            raise TypeError("ctx must be an ExecutionContext created by trusted code")
+        try:
+            pending = self._approvals.open(request)
+            token = self._approvals.grant(pending, approved_by=approved_by)
+        except ApprovalInvalid as failure:
+            return ToolResult(
+                ok=False,
+                tool=request.tool if isinstance(request, PendingApproval) else "<approval>",
+                error=ToolError(failure.code, failure.message),
+                call_id=call_id,
+            )
         return await self.call(
             pending.tool, dict(pending.arguments), ctx=ctx, approval=token, call_id=call_id
         )
@@ -535,8 +599,8 @@ class Gateway:
         if extra:
             raise ToolFailure(ErrorCode.INVALID_ARGUMENTS, f"unknown argument(s) {sorted(extra)}")
         action = arguments.get("action")
-        if action not in self._groups[name]:
-            visible = [n for n in self._groups[name] if self._visible(self._tools[n].spec, ctx)]
+        visible = [n for n in self._groups[name] if self._visible(self._tools[n].spec, ctx)]
+        if action not in visible:  # hidden actions look exactly like missing ones
             raise ToolFailure(ErrorCode.INVALID_ARGUMENTS, f"action must be one of {visible}")
         inner = arguments.get("arguments", {})
         return str(action), inner
@@ -556,7 +620,9 @@ class Gateway:
         fields = args.pop("fields", None) if reg.selectable else None
         cursor_token = args.pop("cursor", None) if reg.has_cursor else None
         bound = self._resolve_bound(spec, ctx)
-        cursor_state = self._open_cursor(cursor_token, reg, ctx, args) if cursor_token else None
+        cursor_state = (
+            self._open_cursor(cursor_token, reg, ctx, args, bound) if cursor_token else None
+        )
 
         missing_scopes = set(spec.required_scopes) - ctx.scopes
         if missing_scopes:
@@ -567,27 +633,45 @@ class Gateway:
         if spec.rate_limit is not None:
             self._rate.check(spec.name, spec.rate_limit, ctx)
 
-        approval_id: str | None = None
+        grant: dict[str, Any] | None = None
         if spec.needs_approval:
-            approval_id = await self._ensure_approval(reg, ctx, args, bound, approval)
+            grant = await self._ensure_approval(reg, ctx, args, bound, approval)
 
-        if call_id is not None and spec.effect is not Effect.READ:
-            key = f"call:{canonical_digest([ctx.actor, ctx.tenant, spec.name, str(call_id)])}"
-            if not await self._state.claim(key, self._call_id_ttl):
-                raise ToolFailure(
-                    ErrorCode.DUPLICATE_CALL,
-                    "this tool call was already executed; it will not run twice",
+        async def commit() -> None:
+            """Claim the call id, then use up the approval: right before execution,
+            after every check that can fail without side effects."""
+            if call_id is not None and spec.effect is not Effect.READ:
+                key = (
+                    f"call:{canonical_digest([ctx.actor, ctx.tenant])[:16]}:"
+                    f"{canonical_digest([spec.name, str(call_id)])}"
+                )
+                if not await claim_or_fail(self._state, key, self._call_id_ttl):
+                    raise ToolFailure(
+                        ErrorCode.DUPLICATE_CALL,
+                        "this tool call was already executed; it will not run twice",
+                    )
+            if grant is not None:
+                await self._approvals.claim(grant, ctx)
+                self._emit(
+                    "approval.granted",
+                    spec.name,
+                    ctx,
+                    outcome="ok",
+                    attributes={"approved_by": grant.get("by")},
                 )
 
-        idempotency_key = approval_id or (
-            canonical_digest([ctx.actor, spec.name, str(call_id)])[:32] if call_id else None
+        idempotency_key = (str(grant["i"]) if grant is not None else None) or (
+            canonical_digest([ctx.actor, ctx.tenant, spec.name, str(call_id)])[:32]
+            if call_id
+            else None
         )
         if isinstance(spec, Operation):
             shaped, meta_source, next_upstream, status = await self._execute_rest(
-                reg, spec, ctx, args, bound, cursor_state, fields, idempotency_key
+                reg, spec, ctx, args, bound, cursor_state, fields, idempotency_key, commit
             )
             http_status.append(status)
         else:
+            await commit()
             shaped = await self._execute_python(reg, spec, ctx, args, bound, cursor_state, fields)
             meta_source, next_upstream, status = {"tool": spec.name}, None, None
 
@@ -596,10 +680,10 @@ class Gateway:
             current_upstream = cursor_state.get("u") if cursor_state else None
             if shaped.next_offset is not None:
                 next_cursor = self._issue_cursor(
-                    reg, ctx, args, current_upstream, shaped.next_offset
+                    reg, ctx, args, bound, current_upstream, shaped.next_offset
                 )
             elif next_upstream is not None:
-                next_cursor = self._issue_cursor(reg, ctx, args, next_upstream, 0)
+                next_cursor = self._issue_cursor(reg, ctx, args, bound, next_upstream, 0)
 
         report = shaped.report
         meta = ResultMeta(
@@ -659,10 +743,11 @@ class Gateway:
         args: Mapping[str, Any],
         bound: Mapping[str, Any],
         token: str | None,
-    ) -> str:
+    ) -> dict[str, Any]:
+        """Return a verified (not yet used) grant, or stop for approval."""
         spec = reg.spec
         if token is not None:
-            payload = await self._approvals.consume(
+            return self._approvals.verify(
                 token,
                 ctx=ctx,
                 tool=spec.name,
@@ -670,14 +755,7 @@ class Gateway:
                 arguments=args,
                 bound=bound,
             )
-            self._emit(
-                "approval.granted",
-                spec.name,
-                ctx,
-                outcome="ok",
-                attributes={"approved_by": payload.get("by")},
-            )
-            return str(payload["i"])
+        self._warn_if_ephemeral()
         pending = self._approvals.create(
             ctx=ctx,
             tool=spec.name,
@@ -685,6 +763,7 @@ class Gateway:
             fingerprint=reg.fingerprint,
             arguments=args,
             bound=bound,
+            target=self._approval_target(reg, args, bound),
         )
         if self._approver is None:
             raise _ApprovalNeeded(pending)
@@ -694,7 +773,7 @@ class Gateway:
         if decision is not True:
             raise ToolFailure(ErrorCode.APPROVAL_DENIED, "the user did not approve this action")
         grant = self._approvals.grant(pending, approved_by="inline-approver")
-        await self._approvals.consume(
+        return self._approvals.verify(
             grant,
             ctx=ctx,
             tool=spec.name,
@@ -702,19 +781,55 @@ class Gateway:
             arguments=args,
             bound=bound,
         )
-        self._emit("approval.granted", spec.name, ctx, outcome="ok")
-        return pending.id
+
+    def _approval_target(
+        self, reg: _Registered, args: Mapping[str, Any], bound: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        spec = reg.spec
+        if not isinstance(spec, Operation):
+            return {"kind": "python", "tool": spec.name}
+        values = {k: args[k] for k in reg.schema["properties"] if k in args}
+        values.update(bound)
+        path_values = {p: values[p] for p in spec.path_params}
+        remaining = {k: v for k, v in values.items() if k not in path_values}
+        query_names, body_names = _placement(spec, remaining)
+        query = [(k, remaining[k]) for k in query_names if k in remaining]
+        return {
+            "kind": "rest",
+            "service": spec.service.name,
+            "method": spec.method,
+            "url": build_url(spec.service.base_url, spec.path, path_values, query),
+            "body_fields": [k for k in body_names if k in remaining],
+        }
+
+    def _warn_if_ephemeral(self) -> None:
+        if self._signer.ephemeral and not self._warned_ephemeral:
+            self._warned_ephemeral = True
+            warnings.warn(
+                "Gateway has no secret=, so it uses a random per-process key: cursors and "
+                "approvals stop working after a restart and across workers. Pass a 32+ byte "
+                "secret from your secret manager in production.",
+                ToolboundWarning,
+                stacklevel=3,
+            )
 
     # ------------------------------------------------------------------ cursors
 
     def _cursor_binding(
-        self, reg: _Registered, ctx: ExecutionContext, args: Mapping[str, Any]
+        self,
+        reg: _Registered,
+        ctx: ExecutionContext,
+        args: Mapping[str, Any],
+        bound: Mapping[str, Any],
     ) -> dict[str, Any]:
         return {
             "t": reg.spec.name,
             "f": reg.fingerprint[:16],
             "a": canonical_digest([ctx.actor, ctx.tenant])[:16],
             "h": canonical_digest(dict(args))[:16],
+            # Trusted values too: a cursor minted under one org/repo binding must not
+            # replay that binding after the session's context changed.
+            "b": canonical_digest(dict(bound))[:16],
         }
 
     def _issue_cursor(
@@ -722,19 +837,30 @@ class Gateway:
         reg: _Registered,
         ctx: ExecutionContext,
         args: Mapping[str, Any],
+        bound: Mapping[str, Any],
         upstream: Any,
         offset: int,
-    ) -> str:
-        payload = {**self._cursor_binding(reg, ctx, args), "u": upstream, "o": offset}
-        return self._signer.sign(_CURSOR_PREFIX, payload, self._cursor_ttl)
+    ) -> str | None:
+        self._warn_if_ephemeral()
+        payload = {**self._cursor_binding(reg, ctx, args, bound), "u": upstream, "o": offset}
+        token = self._signer.seal(_CURSOR_PREFIX, payload, self._cursor_ttl)
+        if len(token) > _MAX_CURSOR:
+            logger.warning("tool %s: upstream cursor too large to carry; stopping", reg.spec.name)
+            return None
+        return token
 
     def _open_cursor(
-        self, token: Any, reg: _Registered, ctx: ExecutionContext, args: Mapping[str, Any]
+        self,
+        token: Any,
+        reg: _Registered,
+        ctx: ExecutionContext,
+        args: Mapping[str, Any],
+        bound: Mapping[str, Any],
     ) -> dict[str, Any]:
-        payload = self._signer.verify(_CURSOR_PREFIX, token)
+        payload = self._signer.unseal(_CURSOR_PREFIX, token, max_length=_MAX_CURSOR)
         if payload is None:
             raise ToolFailure(ErrorCode.INVALID_CURSOR, "cursor is invalid or has expired")
-        expected = self._cursor_binding(reg, ctx, args)
+        expected = self._cursor_binding(reg, ctx, args, bound)
         if any(payload.get(k) != v for k, v in expected.items()):
             raise ToolFailure(
                 ErrorCode.INVALID_CURSOR,
@@ -764,21 +890,57 @@ class Gateway:
                 if inspect.iscoroutinefunction(spec.handler):
                     value = await spec.handler(**kwargs)
                 else:
-                    value = await asyncio.to_thread(spec.handler, **kwargs)
+                    # A private pool: stuck handlers can never starve the default
+                    # executor that DNS resolution (getaddrinfo) relies on.
+                    value = await asyncio.get_running_loop().run_in_executor(
+                        self._handler_pool(), functools.partial(spec.handler, **kwargs)
+                    )
                     if inspect.isawaitable(value):
                         value = await value
         except TimeoutError:
+            if spec.effect is not Effect.READ:
+                # The handler may have done its work (or still be running in a thread).
+                raise ToolFailure(
+                    ErrorCode.OUTCOME_UNKNOWN,
+                    f"tool timed out after {spec.timeout:g}s; the action may or may not have "
+                    "been applied. Check the current state before trying again.",
+                    retryable=False,
+                ) from None
             raise ToolFailure(
                 ErrorCode.TIMEOUT, f"tool timed out after {spec.timeout:g}s"
             ) from None
         try:
-            json.dumps(value)
+            size = len(json.dumps(value))
         except (TypeError, ValueError):
             raise ToolFailure(
                 ErrorCode.INTERNAL_ERROR, "the tool returned a value that is not JSON-serializable"
             ) from None
         offset = int(cursor_state["o"]) if cursor_state else 0
-        return process(reg.output, value, estimator=self._estimator, offset=offset, selected=fields)
+        return await self._process(reg, value, size, offset=offset, fields=fields, secrets=())
+
+    async def _process(
+        self,
+        reg: _Registered,
+        value: Any,
+        size: int,
+        *,
+        offset: int,
+        fields: list[str] | None,
+        secrets: Sequence[str],
+    ) -> ShapeResult:
+        def run() -> ShapeResult:
+            return process(
+                reg.output,
+                value,
+                estimator=self._estimator,
+                offset=offset,
+                selected=fields,
+                secrets=secrets,
+            )
+
+        if size > _OFFLOAD_BYTES:
+            return await asyncio.to_thread(run)
+        return run()
 
     # ------------------------------------------------------------------ REST
 
@@ -792,6 +954,7 @@ class Gateway:
         cursor_state: dict[str, Any] | None,
         fields: list[str] | None,
         idempotency_key: str | None,
+        commit: Callable[[], Awaitable[None]],
     ) -> tuple[ShapeResult, dict[str, Any], Any, int]:
         svc = op.service
         # Deterministic order (schema order, then bindings) regardless of model output order.
@@ -869,7 +1032,19 @@ class Gateway:
             connect_timeout=svc.limits.connect_timeout,
             max_response_bytes=svc.limits.max_response_bytes,
         )
-        response = await self._send(op, request, ctx, credential_header)
+        await commit()  # everything above can fail without side effects
+        try:
+            response = await self._send(op, request, ctx, credential_header)
+        except ToolFailure as failure:
+            if op.effect is not Effect.READ and failure.request_sent is not False:
+                # Some attempt or redirect hop may have reached the upstream.
+                raise ToolFailure(
+                    ErrorCode.OUTCOME_UNKNOWN,
+                    "the upstream did not confirm the result; the change may or may not have "
+                    "been applied. Check the current state before trying again.",
+                    retryable=False,
+                ) from None
+            raise
         source = {"service": svc.name, "operation": op.name, "status": response.status}
         request_id = next(
             (response.headers[h] for h in _REQUEST_ID_HEADERS if h in response.headers), None
@@ -878,22 +1053,29 @@ class Gateway:
             source["request_id"] = request_id
 
         if response.status >= 400:
-            raise self._upstream_failure(reg, response, secrets)
+            raise self._upstream_failure(reg, response, secrets, write=op.effect is not Effect.READ)
         if 300 <= response.status < 400:
+            if op.effect is not Effect.READ:
+                raise ToolFailure(
+                    ErrorCode.OUTCOME_UNKNOWN,
+                    f"the upstream answered with a redirect (HTTP {response.status}) after "
+                    "receiving the request; the change may or may not have been applied. "
+                    "Check the current state before trying again.",
+                    retryable=False,
+                    http_status=response.status,
+                )
             raise ToolFailure(
                 ErrorCode.UPSTREAM_ERROR,
                 f"upstream redirected (HTTP {response.status}) and redirects are disabled",
                 http_status=response.status,
             )
-        decoded = _decode_body(response, reg.output.spec.accept_text)
+        if len(response.body) > _OFFLOAD_BYTES:
+            decoded = await asyncio.to_thread(_decode_body, response, reg.output.spec.accept_text)
+        else:
+            decoded = _decode_body(response, reg.output.spec.accept_text)
         offset = int(cursor_state["o"]) if cursor_state else 0
-        shaped = process(
-            reg.output,
-            decoded,
-            estimator=self._estimator,
-            offset=offset,
-            selected=fields,
-            secrets=secrets,
+        shaped = await self._process(
+            reg, decoded, len(response.body), offset=offset, fields=fields, secrets=secrets
         )
         next_upstream = None
         if pagination is not None and shaped.next_offset is None:
@@ -926,47 +1108,100 @@ class Gateway:
     ) -> HttpResponse:
         svc = op.service
         retry = svc.retry
-        retry_allowed = op.method in SAFE_METHODS or op.idempotency_header is not None
+        # Retry automatically only what cannot change state twice: declared reads over
+        # safe methods, or requests that carry a stable idempotency key.
+        retry_allowed = (
+            op.effect is Effect.READ and op.method in SAFE_METHODS
+        ) or op.idempotency_header is not None
         attempts = retry.max_attempts if retry_allowed else 1
-        semaphore = self._semaphores.get(svc.name)
-        if semaphore is None:
-            semaphore = self._semaphores[svc.name] = asyncio.Semaphore(svc.limits.max_concurrency)
-        async with semaphore:
-            for attempt in range(1, attempts + 1):
-                try:
-                    response = await self._send_following_redirects(op, request, credential_header)
-                except ToolFailure as failure:
-                    self._emit(
-                        "http.attempt", op.name, ctx, outcome=failure.code.value, attempt=attempt
-                    )
-                    if failure.code in (ErrorCode.TIMEOUT, ErrorCode.UPSTREAM_UNAVAILABLE) and (
-                        attempt < attempts
-                    ):
-                        await self._sleep(
-                            self._backoff(retry.backoff_base, retry.backoff_max, attempt)
-                        )
-                        continue
-                    raise
-                self._emit(
-                    "http.attempt",
-                    op.name,
-                    ctx,
-                    outcome="ok",
-                    attempt=attempt,
-                    http_status=response.status,
+        semaphore = self._semaphore(f"{svc.name}|{svc.base_url}", svc.limits.max_concurrency)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + svc.limits.total_timeout
+        try:
+            async with asyncio.timeout_at(deadline), semaphore:
+                return await self._attempts(op, request, ctx, credential_header, attempts, deadline)
+        except TimeoutError:
+            raise ToolFailure(
+                ErrorCode.TIMEOUT,
+                f"the call exceeded its {svc.limits.total_timeout:g}s deadline",
+                request_sent=None,
+            ) from None
+
+    def _handler_pool(self) -> concurrent.futures.ThreadPoolExecutor:
+        with self._sem_lock:
+            if self._executor is None:
+                self._executor = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=32, thread_name_prefix="toolbound-tool"
                 )
-                if response.status in retry.retry_statuses and attempt < attempts:
-                    retry_after = _retry_after(response)
-                    if retry_after is not None and retry_after > retry.max_retry_after:
-                        return response
-                    delay = (
-                        retry_after
-                        if retry_after is not None
-                        else self._backoff(retry.backoff_base, retry.backoff_max, attempt)
-                    )
+            return self._executor
+
+    def _semaphore(self, service: str, limit: int) -> asyncio.Semaphore:
+        loop = asyncio.get_running_loop()
+        with self._sem_lock:
+            per_loop = self._semaphores.get(loop)
+            if per_loop is None:
+                per_loop = self._semaphores[loop] = {}
+            semaphore = per_loop.get(service)
+            if semaphore is None:
+                semaphore = per_loop[service] = asyncio.Semaphore(limit)
+        return semaphore
+
+    async def _attempts(
+        self,
+        op: Operation,
+        request: HttpRequest,
+        ctx: ExecutionContext,
+        credential_header: str | None,
+        attempts: int,
+        deadline: float,
+    ) -> HttpResponse:
+        retry = op.service.retry
+        loop = asyncio.get_running_loop()
+        maybe_sent = False  # did any earlier attempt possibly reach the upstream?
+        for attempt in range(1, attempts + 1):
+            try:
+                response = await self._send_following_redirects(op, request, credential_header)
+            except ToolFailure as failure:
+                if failure.request_sent is not False:
+                    maybe_sent = True
+                elif maybe_sent:
+                    failure.request_sent = None  # this attempt was not sent, an earlier one was
+                self._emit(
+                    "http.attempt", op.name, ctx, outcome=failure.code.value, attempt=attempt
+                )
+                if failure.code in (ErrorCode.TIMEOUT, ErrorCode.UPSTREAM_UNAVAILABLE) and (
+                    attempt < attempts
+                ):
+                    delay = self._backoff(retry.backoff_base, retry.backoff_max, attempt)
+                    if loop.time() + delay >= deadline:
+                        raise
                     await self._sleep(delay)
                     continue
-                return response
+                raise
+            self._emit(
+                "http.attempt",
+                op.name,
+                ctx,
+                outcome="ok",
+                attempt=attempt,
+                http_status=response.status,
+            )
+            if response.status in retry.retry_statuses and attempt < attempts:
+                if response.status != 429:  # a 5xx does not prove nothing was applied
+                    maybe_sent = True
+                retry_after = _retry_after(response)
+                if retry_after is not None and retry_after > retry.max_retry_after:
+                    return response
+                delay = (
+                    retry_after
+                    if retry_after is not None
+                    else self._backoff(retry.backoff_base, retry.backoff_max, attempt)
+                )
+                if loop.time() + delay >= deadline:
+                    return response  # no time left to wait and retry
+                await self._sleep(delay)
+                continue
+            return response
         raise AssertionError("unreachable")  # pragma: no cover
 
     def _backoff(self, base: float, cap: float, attempt: int) -> float:
@@ -980,7 +1215,12 @@ class Gateway:
         current = request
         hops = 0
         while True:
-            response = await transport.send(current)
+            try:
+                response = await transport.send(current)
+            except ToolFailure as failure:
+                if hops > 0:  # an earlier hop already delivered the request
+                    failure.request_sent = None
+                raise
             if response.status not in _REDIRECTS or "location" not in response.headers:
                 return response
             if not policy.follow_redirects:
@@ -991,7 +1231,11 @@ class Gateway:
                     ErrorCode.UPSTREAM_ERROR, "too many redirects", http_status=response.status
                 )
             target = urljoin(current.url, response.headers["location"])
-            check_url(target, policy)
+            try:
+                check_url(target, policy)
+            except ToolFailure as failure:
+                failure.request_sent = None  # the first hop was delivered
+                raise
             headers = list(current.headers)
             if not same_origin(current.url, target):
                 drop = {"authorization", "cookie"}
@@ -1006,7 +1250,12 @@ class Gateway:
             current = replace(current, url=target, headers=tuple(headers), method=method, body=body)
 
     def _upstream_failure(
-        self, reg: _Registered, response: HttpResponse, secrets: Sequence[str]
+        self,
+        reg: _Registered,
+        response: HttpResponse,
+        secrets: Sequence[str],
+        *,
+        write: bool = False,
     ) -> ToolFailure:
         status = response.status
         details: dict[str, object] = {"http_status": status}
@@ -1030,6 +1279,16 @@ class Gateway:
         elif status == 404:
             message = "upstream resource not found (HTTP 404)"
         elif status >= 500:
+            if write:
+                # A server error after a write does not prove nothing changed.
+                return ToolFailure(
+                    ErrorCode.UPSTREAM_ERROR,
+                    f"upstream service error (HTTP {status}); the change may or may not have "
+                    "been applied. Check the current state before trying again.",
+                    retryable=False,
+                    http_status=status,
+                    details=details,
+                )
             return ToolFailure(
                 ErrorCode.UPSTREAM_ERROR,
                 f"upstream service error (HTTP {status})",

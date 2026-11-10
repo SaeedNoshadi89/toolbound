@@ -39,6 +39,7 @@ from toolbound import (
     allow_all,
 )
 from toolbound.core.budget import to_json
+from toolbound.core.errors import ToolFailure
 from toolbound.core.shaping import compile_output, process
 from toolbound.transport import SecureTransport
 
@@ -348,6 +349,27 @@ def bench_memory() -> dict[str, Any]:
     }
 
 
+def bench_worst_case_trim() -> dict[str, Any]:
+    """Adversarial output: a ~4.8 MB pass-through object of 1,200 long strings.
+
+    Before 0.2 this took about 8 s of event-loop CPU on the reference machine and then
+    failed anyway. It is now bounded, and large results are shaped off the event loop.
+    """
+    big = {f"k{i}": "x" * 3999 for i in range(1200)}
+    compiled = compile_output(Output(max_tokens=2000))
+    started = time.perf_counter()
+    outcome = "ok"
+    try:
+        process(compiled, big, estimator=BYTE)
+    except ToolFailure as failure:
+        outcome = failure.code.value
+    return {
+        "input_json_bytes": len(to_json(big)),
+        "seconds": round(time.perf_counter() - started, 3),
+        "outcome": outcome,
+    }
+
+
 def environment() -> dict[str, Any]:
     import toolbound
 
@@ -426,6 +448,9 @@ def report(results: dict[str, Any]) -> str:
         f"- Peak traced memory shaping {results['memory']['input_items']:,} issues "
         f"({results['memory']['input_json_bytes']:,} bytes JSON): "
         f"{results['memory']['peak_traced_bytes_during_shaping']:,} bytes",
+        f"- Worst-case budget trimming ({results['worst_case_trim']['input_json_bytes']:,} bytes, "
+        f"1,200 long strings, 2,000-token budget): {results['worst_case_trim']['seconds']} s, "
+        f"outcome `{results['worst_case_trim']['outcome']}`",
     ]
     return "\n".join(lines)
 
@@ -439,6 +464,7 @@ async def main() -> None:
         "pipeline": await bench_pipeline(),
         "end_to_end": await bench_end_to_end(),
         "memory": bench_memory(),
+        "worst_case_trim": bench_worst_case_trim(),
     }
     RESULTS.mkdir(exist_ok=True)
     (RESULTS / "latest.json").write_text(json.dumps(results, indent=2, ensure_ascii=False))
