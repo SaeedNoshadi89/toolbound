@@ -7,7 +7,7 @@ import json
 import threading
 import time
 import warnings
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import pytest
 
@@ -435,7 +435,7 @@ async def test_r13_concurrency_limit_is_per_service_endpoint(ctx):
 
     class Slow:
         async def send(self, request):
-            if "a.example.com" in request.url:
+            if urlsplit(request.url).hostname == "a.example.com":
                 started.set()
                 await release.wait()
             return MockResponse(200, json={}).to_http(request.url)
