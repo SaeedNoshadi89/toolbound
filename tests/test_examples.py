@@ -15,7 +15,7 @@ EXAMPLES = sorted(p for p in (ROOT / "examples").glob("*.py") if not p.name.star
 
 
 def _requirement(path: Path) -> str:
-    match = re.match(r"# requires: (\w+)", path.read_text())
+    match = re.match(r"# requires: (\w+)", path.read_text(encoding="utf-8"))
     return match.group(1) if match else "offline"
 
 
@@ -40,12 +40,12 @@ def test_example_runs(path):
 
 def test_examples_compile():
     for path in (ROOT / "examples").glob("*.py"):
-        compile(path.read_text(), str(path), "exec")
+        compile(path.read_text(encoding="utf-8"), str(path), "exec")
 
 
 def test_readme_quickstart_matches_example():
-    readme = (ROOT / "README.md").read_text()
-    quickstart = (ROOT / "examples" / "quickstart.py").read_text()
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    quickstart = (ROOT / "examples" / "quickstart.py").read_text(encoding="utf-8")
     body = quickstart.split('"""', 2)[2].strip()
     assert body in readme, "README quickstart drifted from examples/quickstart.py"
 
@@ -59,11 +59,11 @@ def test_readme_complete_example_runs(tmp_path, monkeypatch, capsys):
     from toolbound import MockTransport
     from toolbound.transport.mock import MockResponse
 
-    readme = (ROOT / "README.md").read_text()
+    readme = (ROOT / "README.md").read_text(encoding="utf-8").replace("\r\n", "\n")
     yaml_text = _block(readme, "## A complete example", "yaml")
     code = _block(readme, "…or in Python", "python")
     (tmp_path / "contracts").mkdir()
-    (tmp_path / "contracts" / "crm.yaml").write_text(yaml_text)
+    (tmp_path / "contracts" / "crm.yaml").write_text(yaml_text, encoding="utf-8")
     monkeypatch.setenv("CRM_API_TOKEN", "crm-secret-token-value")
 
     mock = MockTransport()

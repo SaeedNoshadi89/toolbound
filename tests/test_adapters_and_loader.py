@@ -163,8 +163,8 @@ CONTRACT = textwrap.dedent(
 
 
 def test_yaml_loader(tmp_path):
-    (tmp_path / "weather.yaml").write_text(CONTRACT)
-    (tmp_path / "ignored.txt").write_text("nope")
+    (tmp_path / "weather.yaml").write_text(CONTRACT, encoding="utf-8")
+    (tmp_path / "ignored.txt").write_text("nope", encoding="utf-8")
     operations = load_contracts(tmp_path)
     assert [o.name for o in operations] == ["current_weather"]
     assert operations[0].output.max_tokens == 200
@@ -204,7 +204,7 @@ def test_loader_rejects_semantic_errors():
 
 def test_cli(tmp_path, capsys):
     path = tmp_path / "c.yaml"
-    path.write_text(CONTRACT)
+    path.write_text(CONTRACT, encoding="utf-8")
     assert cli_main(["validate", str(path)]) == 0
     assert "current_weather" in capsys.readouterr().out
     assert cli_main(["tools", str(path), "--format", "anthropic"]) == 0
@@ -212,7 +212,7 @@ def test_cli(tmp_path, capsys):
     assert json.loads(out.out)[0]["name"] == "current_weather"
     assert "tokens" in out.err
     bad = tmp_path / "bad.yaml"
-    bad.write_text("version: 1\n")
+    bad.write_text("version: 1\n", encoding="utf-8")
     assert cli_main(["validate", str(bad)]) == 1
     assert cli_main(["schema"]) == 0
 

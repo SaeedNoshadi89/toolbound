@@ -27,7 +27,7 @@ ALLOWED_LAZY = {"toolbound.transport.http", "toolbound.loaders"}
 
 
 def _imports(path: Path):
-    tree = ast.parse(path.read_text())
+    tree = ast.parse(path.read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -39,7 +39,7 @@ def _imports(path: Path):
 def test_core_has_no_framework_or_http_imports():
     offenders = []
     for path in CORE.glob("*.py"):
-        top_level = set(ast.parse(path.read_text()).body)
+        top_level = set(ast.parse(path.read_text(encoding="utf-8")).body)
         for node, module in _imports(path):
             root = module.split(".")[0]
             if root in FORBIDDEN:
