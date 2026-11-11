@@ -20,7 +20,7 @@ small, bounded, honest output before it reaches the model.
 6. Destructive calls stop at `approval_required`. Nothing runs until a human approves the
    exact call.
 
-> **Status: alpha (0.2.0).** 0.2 is a security-hardening release of 0.1; see the
+> **Status: alpha (0.2.x).** 0.2 is a security-hardening release of 0.1; see the
 > [changelog](https://github.com/SaeedNoshadi89/toolbound/blob/main/CHANGELOG.md). The public API
 > may still change before 1.0.
 

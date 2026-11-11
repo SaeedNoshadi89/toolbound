@@ -6,6 +6,18 @@ All notable changes are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-11
+
+Documentation-only release. **No code changes**; upgrading from 0.2.0 is optional.
+
+### Changed
+
+- The README on PyPI now shows the published status and `pip install toolbound` (the 0.2.0
+  page still said "not yet published" and pointed to a GitHub install).
+- CI and release workflows use newer major versions of `actions/checkout`,
+  `astral-sh/setup-uv`, `actions/upload-artifact` and `actions/download-artifact`, still
+  pinned by commit SHA.
+
 ## [0.2.0] - 2026-11-11
 
 Security-hardening release after an independent production-readiness review of 0.1.0.
