@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 import threading
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -53,6 +54,9 @@ DOCUMENTS = [
 ]
 
 
+_NAME = re.compile(r"[A-Za-z0-9_.-]{1,100}")
+
+
 class _Handler(BaseHTTPRequestHandler):
     def log_message(self, *args: object) -> None:
         pass
@@ -73,15 +77,22 @@ class _Handler(BaseHTTPRequestHandler):
         query = parse_qs(url.query)
         parts = [p for p in url.path.split("/") if p]
         if parts[:1] == ["repos"] and len(parts) == 4 and parts[3] == "issues":
+            owner, repo = parts[1], parts[2]
+            if not (_NAME.fullmatch(owner) and _NAME.fullmatch(repo)):
+                self._json(404, {"message": "Not Found"})
+                return
             page = int(query.get("page", ["1"])[0])
             per_page = min(int(query.get("per_page", ["30"])[0]), 100)
             start = (page - 1) * per_page
             items = ISSUES[start : start + per_page]
             headers = {}
             if start + per_page < len(ISSUES):
-                host = self.headers["Host"]
+                # Built only from the server's own address and validated names, never
+                # from client-supplied header values (avoids response splitting).
+                port = int(self.server.server_address[1])
                 headers["Link"] = (
-                    f'<http://{host}{url.path}?page={page + 1}&per_page={per_page}>; rel="next"'
+                    f"<http://127.0.0.1:{port}/repos/{owner}/{repo}/issues"
+                    f'?page={page + 1}&per_page={per_page}>; rel="next"'
                 )
             self._json(200, items, headers)
         elif parts[:1] == ["repos"] and len(parts) == 5 and parts[3] == "issues":
