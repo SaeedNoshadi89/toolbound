@@ -87,13 +87,11 @@ class _Handler(BaseHTTPRequestHandler):
             items = ISSUES[start : start + per_page]
             headers = {}
             if start + per_page < len(ISSUES):
-                # Built only from the server's own address and validated names, never
-                # from client-supplied header values (avoids response splitting).
-                port = int(self.server.server_address[1])
-                headers["Link"] = (
-                    f"<http://127.0.0.1:{port}/repos/{owner}/{repo}/issues"
-                    f'?page={page + 1}&per_page={per_page}>; rel="next"'
-                )
+                # A query-only relative reference built from integers: no request text
+                # ever reaches a response header (no response splitting). Clients
+                # resolve it against the request URL, as RFC 8288 allows.
+                headers["Link"] = f'<?page={page + 1}&per_page={per_page}>; rel="next"'
+
             self._json(200, items, headers)
         elif parts[:1] == ["repos"] and len(parts) == 5 and parts[3] == "issues":
             number = int(parts[4]) if parts[4].isdigit() else -1
