@@ -42,6 +42,16 @@ Shapes used: issues keep `number, title, state, author, labels, comments` and th
 280 characters of `body`. Rulings keep `doc_id, court, date, title` and a 600-character
 excerpt.
 
+"Shaped tokens" counts the `data` the model receives. The **full envelope** sent to the
+model (`ToolResult.to_json()`, data + `meta`) measured 2,778, 1,124 and 4,971 tokens for the
+three rows. The middle row is larger because it includes an encrypted `next_cursor`
+(154 tokens on its own).
+
+**Independent check.** These counts were reproduced with a separate script that goes
+through the public `Gateway` API with a mock upstream and counts with `tiktoken`
+directly, not with the benchmark's helpers. Both give identical numbers. The fixtures use
+fixed seeds, so re-running `benchmarks/run.py` reproduces the token counts exactly.
+
 ### Default `ByteEstimator` vs a real tokenizer
 
 | Sample | Tokenizer | ByteEstimator | Estimate / real | Bytes per token |

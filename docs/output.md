@@ -103,9 +103,11 @@ plus 4 KB), so a hostile response cannot make redaction slow.
   a cut is always reported in `meta.omitted`, but "required" protects a field from being
   *dropped*, not from being *shortened*. Raise the field's `max_chars` if it must stay
   whole.
-- `max_tokens` (default 2000) is the budget for `data`. The envelope adds a small,
-  roughly constant overhead (`meta`, about 30–150 tokens depending on omissions and
-  cursors).
+- `max_tokens` (default 2000) is the budget for `data`. The envelope adds `meta` on top:
+  measured at about 60–70 tokens (`o200k_base`) for a typical result, **plus about 150
+  tokens when a `next_cursor` is returned**: the cursor is ~220 characters of encrypted,
+  random-looking text, which tokenizes poorly. Leave that headroom when you size
+  `max_tokens` against a context limit.
 - Token counts come from the gateway's `TokenEstimator`. The default `ByteEstimator`
   (`ceil(utf8_bytes / 3)`) is deterministic and conservative: in our
   [measurements](benchmarks.md) it over-counted by 1.36–1.87× compared with the
