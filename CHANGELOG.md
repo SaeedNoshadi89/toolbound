@@ -6,7 +6,7 @@ All notable changes are documented here. The format follows
 
 ## [Unreleased]
 
-## [0.2.0] - unreleased
+## [0.2.0] - 2026-11-11
 
 Security-hardening release after an independent production-readiness review of 0.1.0.
 **Everyone on 0.1.0 should upgrade.** 0.1.0 was never published to PyPI.

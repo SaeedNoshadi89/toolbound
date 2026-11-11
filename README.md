@@ -20,9 +20,9 @@ small, bounded, honest output before it reaches the model.
 6. Destructive calls stop at `approval_required`. Nothing runs until a human approves the
    exact call.
 
-> **Status: alpha (0.2.0, unreleased).** 0.2 is a security-hardening release of 0.1; see the
+> **Status: alpha (0.2.0).** 0.2 is a security-hardening release of 0.1; see the
 > [changelog](https://github.com/SaeedNoshadi89/toolbound/blob/main/CHANGELOG.md). The public API
-> may still change before 1.0. Not yet published to PyPI.
+> may still change before 1.0.
 
 ---
 
@@ -108,13 +108,13 @@ responses (for now), and activating OpenAPI specs automatically.
 Requires Python **3.11–3.15**. Runtime dependencies: `httpx`, `jsonschema` and
 `cryptography`.
 
-Until the first PyPI release, install from GitHub:
-
 ```bash
-pip install "toolbound[yaml] @ git+https://github.com/SaeedNoshadi89/toolbound"
+pip install "toolbound[yaml]"
 # or
-uv add "toolbound[yaml] @ git+https://github.com/SaeedNoshadi89/toolbound"
+uv add "toolbound[yaml]"
 ```
+
+[![PyPI](https://img.shields.io/pypi/v/toolbound)](https://pypi.org/project/toolbound/)
 
 Optional extras: `yaml` (YAML contracts), `tiktoken` (tokenizer-based budgets).
 
@@ -495,7 +495,7 @@ More docs: [API reference](https://github.com/SaeedNoshadi89/toolbound/blob/main
 | Version | Planned |
 |---|---|
 | 0.1 | core pipeline, contracts, secure transport, output shaping, approvals, Anthropic/OpenAI adapters |
-| **0.2** (this) | security hardening: no cookie sharing, method-derived effects, encrypted approval requests and cursors, `outcome_unknown`, fail-closed replay store, bounded trimming, FastAPI/LangGraph examples, security regression suite and threat model |
+| **0.2** (current) | security hardening: no cookie sharing, method-derived effects, encrypted approval requests and cursors, `outcome_unknown`, fail-closed replay store, bounded trimming, FastAPI/LangGraph examples, security regression suite and threat model |
 | 0.3 | MCP server adapter, Redis `StateStore`, tool search for large catalogs, OpenTelemetry extra |
 | later | OpenAPI → reviewed draft contracts, OAuth helpers, multipart uploads |
 
