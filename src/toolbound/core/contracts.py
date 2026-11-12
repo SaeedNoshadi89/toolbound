@@ -548,6 +548,9 @@ class ToolSpec:
     group: str | None = None
     requires_approval: bool | None = None
     rate_limit: RateLimit | None = None
+    #: Lifetime in seconds of the approval requests this tool creates; ``None`` uses
+    #: the gateway's ``approval_ttl``. A call can override it again.
+    approval_ttl: float | None = None
 
     def __post_init__(self) -> None:
         if not _TOOL_NAME.match(self.name):
@@ -568,6 +571,13 @@ class ToolSpec:
         object.__setattr__(self, "tags", tuple(self.tags))
         if self.group is not None and not _TOOL_NAME.match(self.group):
             raise ConfigurationError(f"tool {self.name}: invalid group name {self.group!r}")
+        if self.approval_ttl is not None:
+            from .approval import check_approval_ttl
+
+            try:
+                object.__setattr__(self, "approval_ttl", check_approval_ttl(self.approval_ttl))
+            except (TypeError, ValueError) as exc:
+                raise ConfigurationError(f"tool {self.name}: {exc}") from None
 
     @property
     def needs_approval(self) -> bool:

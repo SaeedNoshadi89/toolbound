@@ -32,6 +32,10 @@ class ExecutionContext:
             (for example ``{"repo_owner": "acme"}``). Never put secrets here;
             use a :class:`~toolbound.CredentialProvider` instead.
         request_id: Correlation id for logs and approvals. Generated if omitted.
+        principal: Optional object for your own trusted code, typically the signed-in
+            user. Python tools and ``authorize`` read it as ``ctx.principal``. It is
+            never bound, sealed into approvals or cursors, digested, logged or shown
+            to the model, and it does not take part in equality.
     """
 
     actor: str
@@ -39,6 +43,7 @@ class ExecutionContext:
     scopes: frozenset[str] = frozenset()
     attributes: Mapping[str, Any] = field(default_factory=dict)
     request_id: str = field(default_factory=_new_request_id)
+    principal: Any = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.actor, str) or not self.actor:

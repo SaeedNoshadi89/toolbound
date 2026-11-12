@@ -223,3 +223,14 @@ def test_sync_gateway(make_gateway, mock, ctx):
     with SyncGateway(gw) as sync:
         assert sync.call("ping", {}, ctx=ctx).data == {"pong": True}
     assert mock.closed is False  # transport supplied by caller is not closed
+
+
+def test_loader_reads_approval_ttl():
+    import yaml
+
+    document = yaml.safe_load(CONTRACT)
+    document["operations"][0]["approval_ttl"] = 120
+    assert parse_contract(document)[0].approval_ttl == 120
+    document["operations"][0]["approval_ttl"] = 0
+    with pytest.raises(ConfigurationError, match="approval_ttl"):
+        parse_contract(document)

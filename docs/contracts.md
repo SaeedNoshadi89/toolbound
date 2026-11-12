@@ -87,6 +87,7 @@ tokens are easy.
 | `tags` | `tags=` | `[]` | filter with `gateway.definitions(ctx, tags={...})` |
 | `group` | `group=` | none | used by the `grouped` exposure strategy |
 | `requires_approval` | `requires_approval=` | `true` for destructive, else `false` | override approval |
+| `approval_ttl` | `approval_ttl=` | the gateway's `approval_ttl` | lifetime in seconds of this tool's approval requests (0 < ttl ≤ 7 days); a call can override it |
 | `rate_limit` | `RateLimit(calls, per_seconds, scope)` | none | `scope`: `actor` (default), `tenant` or `global`; per process |
 | `query` / `body` | `query=` / `body=` | automatic | explicit placement of argument names |
 | `body_format` | `body_format=` | `json` | `json` or `form` |

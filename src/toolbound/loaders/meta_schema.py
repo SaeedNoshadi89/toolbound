@@ -108,6 +108,7 @@ CONTRACT_SCHEMA: dict[str, Any] = {
                 "tags": {"type": "array", "items": {"type": "string"}},
                 "group": {"type": "string"},
                 "requires_approval": {"type": "boolean"},
+                "approval_ttl": {"type": "number", "exclusiveMinimum": 0},
                 "rate_limit": {
                     "type": "object",
                     "additionalProperties": False,

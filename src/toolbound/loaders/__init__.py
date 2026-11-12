@@ -191,6 +191,7 @@ def _operation(raw: dict[str, Any], service: Service) -> Operation:
         tags=tuple(raw.get("tags", ())),
         group=raw.get("group"),
         requires_approval=raw.get("requires_approval"),
+        approval_ttl=raw.get("approval_ttl"),
         rate_limit=RateLimit(**rate) if rate else None,
         query=tuple(raw["query"]) if "query" in raw else None,
         body=tuple(raw["body"]) if "body" in raw else None,

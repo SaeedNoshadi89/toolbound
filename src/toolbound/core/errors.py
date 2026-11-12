@@ -14,7 +14,11 @@ Two kinds of failure exist in Toolbound:
 
 from __future__ import annotations
 
+import json
+import re
+from collections.abc import Mapping
 from enum import StrEnum
+from typing import Any
 
 
 class ToolboundError(Exception):
@@ -60,6 +64,7 @@ class ErrorCode(StrEnum):
     RESPONSE_TOO_LARGE = "response_too_large"
     RESULT_TOO_LARGE = "result_too_large"
     OUTCOME_UNKNOWN = "outcome_unknown"
+    REFUSED = "refused"
     INTERNAL_ERROR = "internal_error"
 
 
@@ -115,3 +120,51 @@ class ApprovalInvalid(ToolFailure):
 
     def __init__(self, message: str) -> None:
         super().__init__(ErrorCode.APPROVAL_INVALID, message, retryable=False)
+
+
+_REASON = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_RESERVED_DETAILS = frozenset({"code", "message", "retryable", "retry_after_seconds", "reason"})
+_MAX_DETAILS_BYTES = 2048
+
+
+class ToolRefusal(ToolboundError):
+    """Raised by a trusted Python tool to refuse a call for a business reason.
+
+    The call fails with code ``refused`` and ``details["reason"]`` set to
+    ``reason`` (for example ``"version_conflict"``), plus ``details``. Nothing is
+    retried. For a write tool it means the handler did not apply the action, so the
+    outcome is known (unlike ``outcome_unknown``). Any other exception from a
+    handler is still ``internal_error``.
+
+    ``message`` and ``details`` are shown to the model: never put secrets, personal
+    data or raw upstream text in them.
+
+    Args:
+        reason: Stable machine-readable reason: lowercase letters, digits and
+            ``_``, starting with a letter, at most 64 characters.
+        message: Short, model-safe explanation.
+        details: Optional JSON-serializable extra fields (at most 2 KiB); the keys
+            ``code``, ``message``, ``retryable``, ``retry_after_seconds`` and
+            ``reason`` are reserved.
+    """
+
+    def __init__(
+        self, reason: str, message: str = "", *, details: Mapping[str, Any] | None = None
+    ) -> None:
+        if not isinstance(reason, str) or not _REASON.match(reason):
+            raise ValueError(f"invalid refusal reason {reason!r}")
+        extra = dict(details or {})
+        reserved = _RESERVED_DETAILS & set(extra)
+        if reserved:
+            raise ValueError(f"refusal details use reserved key(s) {sorted(reserved)}")
+        try:
+            size = len(json.dumps(extra))
+        except (TypeError, ValueError):
+            raise ValueError("refusal details must be JSON-serializable") from None
+        if size > _MAX_DETAILS_BYTES:
+            raise ValueError(f"refusal details larger than {_MAX_DETAILS_BYTES} bytes")
+        message = message or f"the tool refused this call ({reason})"
+        super().__init__(message)
+        self.reason = reason
+        self.message = message
+        self.details = extra
