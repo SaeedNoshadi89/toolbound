@@ -26,10 +26,10 @@ import weakref
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path as FsPath
-from typing import Any, TypeVar, cast
+from typing import Any, Literal, TypeVar, cast
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit
 
-from .approval import ApprovalManager, PendingApproval
+from .approval import ApprovalManager, PendingApproval, check_approval_ttl
 from .budget import ByteEstimator
 from .context import ExecutionContext
 from .contracts import (
@@ -38,6 +38,7 @@ from .contracts import (
     BasicAuth,
     BearerAuth,
     Effect,
+    FromContext,
     NoAuth,
     Operation,
     Output,
@@ -52,6 +53,7 @@ from .errors import (
     NetworkBlocked,
     ToolboundWarning,
     ToolFailure,
+    ToolRefusal,
 )
 from .exposure import Strategy, ToolDefinition, group_definitions
 from .network import build_url, check_url, flatten_query, same_origin
@@ -92,6 +94,9 @@ _SAFE_ID = re.compile(r"^[A-Za-z0-9._:/-]{1,80}$")
 _JSON_TYPE = re.compile(r"^application/(?:[\w.+-]+\+)?json$")
 
 F = TypeVar("F", bound=Callable[..., Any])
+
+#: A bound value the live context cannot provide (resume diagnosis only).
+_MISSING = object()
 
 
 @dataclass(slots=True)
@@ -487,29 +492,99 @@ class Gateway:
         ctx: ExecutionContext,
         approved_by: str,
         call_id: str | None = None,
+        bound: Literal["live", "sealed"] = "live",
     ) -> ToolResult:
         """Approve a request and execute it in one step (host code only).
 
         The tool and arguments come from the verified request token, and the
         call runs under the live ``ctx``, which must match the requesting actor
-        and tenant. Never raises for an invalid request: it returns an
-        ``approval_invalid`` result.
+        and tenant. Scopes, ``authorize`` and visibility are checked again under
+        the live ``ctx``.
+
+        ``bound`` decides where trusted bound values come from:
+
+        * ``"live"`` (default): they are resolved from the live ``ctx`` and must
+          equal the sealed ones. A difference is ``approval_invalid`` whose
+          ``details["changed_bound"]`` names the values that changed (names only).
+        * ``"sealed"``: values bound from ``attributes.<key>`` are taken from the
+          request token, so a value prepared for that one request (an operation
+          id, the record version the human saw) does not have to be kept by the
+          host. Actor, tenant, constants and callables are still resolved live.
+
+        Never raises for an invalid request: it returns an ``approval_invalid``
+        result.
         """
         if not isinstance(ctx, ExecutionContext):
             raise TypeError("ctx must be an ExecutionContext created by trusted code")
+        if bound not in ("live", "sealed"):
+            raise ValueError("bound must be 'live' or 'sealed'")
+        display = request.tool if isinstance(request, PendingApproval) else "<approval>"
         try:
             pending = self._approvals.open(request)
+            if bound == "sealed":
+                ctx = self._with_sealed_bound(pending, ctx)
+            self._check_resume_context(pending, ctx)
             token = self._approvals.grant(pending, approved_by=approved_by)
         except ApprovalInvalid as failure:
             return ToolResult(
                 ok=False,
-                tool=request.tool if isinstance(request, PendingApproval) else "<approval>",
-                error=ToolError(failure.code, failure.message),
+                tool=display,
+                error=ToolError(failure.code, failure.message, details=dict(failure.details)),
                 call_id=call_id,
             )
         return await self.call(
             pending.tool, dict(pending.arguments), ctx=ctx, approval=token, call_id=call_id
         )
+
+    def _with_sealed_bound(
+        self, pending: PendingApproval, ctx: ExecutionContext
+    ) -> ExecutionContext:
+        """``ctx`` with the request's sealed values for its ``attributes.<key>`` bindings."""
+        reg = self._tools.get(pending.tool)
+        if reg is None:
+            return ctx  # unknown tool: call() reports it
+        overrides: dict[str, Any] = {}
+        for name, binding in reg.spec.bind.items():
+            if (
+                isinstance(binding, FromContext)
+                and binding.path.startswith("attributes.")
+                and name in pending.bound
+            ):
+                overrides[binding.path.removeprefix("attributes.")] = pending.bound[name]
+        if not overrides:
+            return ctx
+        return replace(ctx, attributes={**ctx.attributes, **overrides})
+
+    def _check_resume_context(self, pending: PendingApproval, ctx: ExecutionContext) -> None:
+        """Say *why* a live context cannot run the request, before the digest check
+        would only say that something differs. Names, never values."""
+        if ctx.actor != pending.actor or ctx.tenant != pending.tenant:
+            raise ApprovalInvalid("approval was requested by another actor or tenant")
+        reg = self._tools.get(pending.tool)
+        if reg is None:
+            return
+        live: dict[str, Any] = {}
+        for name, binding in reg.spec.bind.items():
+            try:
+                live[name] = resolve_binding(binding, ctx)
+            except LookupError:
+                live[name] = _MISSING
+        changed = sorted(
+            name
+            for name in set(live) | set(pending.bound)
+            if name not in pending.bound
+            or live.get(name, _MISSING) is _MISSING
+            or canonical_digest(live[name]) != canonical_digest(pending.bound[name])
+        )
+        if changed:
+            failure = ApprovalInvalid(
+                "trusted value(s) changed since approval was requested: "
+                + ", ".join(changed)
+                + ". Resume under the values the request was made with, or pass "
+                "bound='sealed'."
+            )
+            failure.details = {"changed_bound": changed}
+            raise failure
 
     # ------------------------------------------------------------------ execution
 
@@ -521,6 +596,7 @@ class Gateway:
         ctx: ExecutionContext,
         call_id: str | None = None,
         approval: str | None = None,
+        approval_ttl: float | None = None,
     ) -> ToolResult:
         """Execute one tool call. Never raises for expected failures.
 
@@ -531,9 +607,13 @@ class Gateway:
             call_id: The provider's tool-call id. For write/destructive tools a
                 repeated id is rejected, preventing accidental double execution.
             approval: A grant token from :meth:`grant` (host code only).
+            approval_ttl: Lifetime in seconds of an approval request this call
+                creates; overrides the tool's ``approval_ttl`` and the gateway's.
         """
         if not isinstance(ctx, ExecutionContext):
             raise TypeError("ctx must be an ExecutionContext created by trusted code")
+        if approval_ttl is not None:
+            check_approval_ttl(approval_ttl)
         started = time.perf_counter()
         display = name if isinstance(name, str) and len(name) <= 64 else "<invalid>"
         self._emit("call.start", display, ctx)
@@ -544,7 +624,9 @@ class Gateway:
             if reg is None or not self._visible(reg.spec, ctx):
                 raise ToolFailure(ErrorCode.UNKNOWN_TOOL, f"unknown tool {display!r}")
             display = reg.spec.name
-            result = await self._run(reg, arguments, ctx, call_id, approval, http_status)
+            result = await self._run(
+                reg, arguments, ctx, call_id, approval, http_status, approval_ttl
+            )
         except _ApprovalNeeded as needed:
             self._emit("approval.required", display, ctx, outcome="approval_required")
             result = ToolResult(
@@ -624,6 +706,7 @@ class Gateway:
         call_id: str | None,
         approval: str | None,
         http_status: list[int],
+        approval_ttl: float | None = None,
     ) -> ToolResult:
         spec = reg.spec
         raw = {} if arguments is None else arguments
@@ -646,23 +729,23 @@ class Gateway:
 
         grant: dict[str, Any] | None = None
         if spec.needs_approval:
-            grant = await self._ensure_approval(reg, ctx, args, bound, approval)
+            ttl = approval_ttl if approval_ttl is not None else spec.approval_ttl
+            grant = await self._ensure_approval(reg, ctx, args, bound, approval, call_id, ttl)
 
         async def commit() -> None:
             """Claim the call id, then use up the approval: right before execution,
             after every check that can fail without side effects."""
-            if call_id is not None and spec.effect is not Effect.READ:
-                key = (
-                    f"call:{canonical_digest([ctx.actor, ctx.tenant])[:16]}:"
-                    f"{canonical_digest([spec.name, str(call_id)])}"
-                )
-                if not await claim_or_fail(self._state, key, self._call_id_ttl):
-                    raise ToolFailure(
-                        ErrorCode.DUPLICATE_CALL,
-                        "this tool call was already executed; it will not run twice",
-                    )
+            writes = spec.effect is not Effect.READ
+            if writes and call_id is not None:
+                await self._claim_call_id(ctx, spec.name, str(call_id))
             if grant is not None:
                 await self._approvals.claim(grant, ctx)
+                # The id of the call that requested this approval, claimed after the
+                # approval itself (a reused token stays `approval_invalid`): a model
+                # tool call sealed for approval more than once still runs once.
+                origin = grant.get("c")
+                if writes and origin is not None and str(origin) != str(call_id):
+                    await self._claim_call_id(ctx, spec.name, str(origin))
                 self._emit(
                     "approval.granted",
                     spec.name,
@@ -721,6 +804,17 @@ class Gateway:
             call_id=call_id,
         )
 
+    async def _claim_call_id(self, ctx: ExecutionContext, tool: str, call_id: str) -> None:
+        key = (
+            f"call:{canonical_digest([ctx.actor, ctx.tenant])[:16]}:"
+            f"{canonical_digest([tool, call_id])}"
+        )
+        if not await claim_or_fail(self._state, key, self._call_id_ttl):
+            raise ToolFailure(
+                ErrorCode.DUPLICATE_CALL,
+                "this tool call was already executed; it will not run twice",
+            )
+
     def _resolve_bound(self, spec: Tool, ctx: ExecutionContext) -> dict[str, Any]:
         bound: dict[str, Any] = {}
         for name, binding in spec.bind.items():
@@ -754,6 +848,8 @@ class Gateway:
         args: Mapping[str, Any],
         bound: Mapping[str, Any],
         token: str | None,
+        call_id: str | None = None,
+        ttl_seconds: float | None = None,
     ) -> dict[str, Any]:
         """Return a verified (not yet used) grant, or stop for approval."""
         spec = reg.spec
@@ -775,6 +871,8 @@ class Gateway:
             arguments=args,
             bound=bound,
             target=self._approval_target(reg, args, bound),
+            call_id=None if call_id is None else str(call_id),
+            ttl_seconds=ttl_seconds,
         )
         if self._approver is None:
             raise _ApprovalNeeded(pending)
@@ -908,6 +1006,13 @@ class Gateway:
                     )
                     if inspect.isawaitable(value):
                         value = await value
+        except ToolRefusal as refusal:
+            raise ToolFailure(
+                ErrorCode.REFUSED,
+                refusal.message,
+                retryable=False,
+                details={"reason": refusal.reason, **refusal.details},
+            ) from None
         except TimeoutError:
             if spec.effect is not Effect.READ:
                 # The handler may have done its work (or still be running in a thread).

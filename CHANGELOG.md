@@ -6,6 +6,32 @@ All notable changes are documented here. The format follows
 
 ## [Unreleased]
 
+Fixes and additions found while integrating Toolbound into a host application.
+
+### Security
+
+- **Medium:** a model tool call sealed for approval more than once (a retry, a re-run
+  graph node) produced separate approval requests that **all executed** when approved: the
+  call-id claim protected direct calls only. An approval request now carries the id of the
+  call that requested it (`PendingApproval.call_id`), and that id is claimed when the
+  approval executes, so the action runs at most once per call id. Requests sealed by
+  earlier versions carry no call id and behave as before.
+
+### Added
+
+- `ToolRefusal(reason, message, details=...)`: a Python tool refuses a call for a
+  business reason. The result is the new error code `refused` with `details["reason"]`;
+  other exceptions are still `internal_error`.
+- `Gateway.resume(..., bound="sealed")` uses the trusted values sealed in the request for
+  `attributes.<key>` bindings; actor, tenant and scopes stay live. With the default
+  `bound="live"`, a changed value is reported in `error.details["changed_bound"]` (names
+  only) instead of a bare `approval_invalid`.
+- `approval_ttl` per tool (`Operation`, `PythonTool`, YAML contracts) and per call
+  (`Gateway.call(..., approval_ttl=...)`), each between 0 and 7 days.
+- `ExecutionContext(principal=...)`: an object for trusted code (the signed-in user),
+  never bound, sealed, digested, logged or compared.
+- Docs: an out-of-band approval recipe for MCP servers.
+
 ## [0.2.2] - 2026-11-12
 
 Security patch release. **Everyone on 0.2.x should upgrade.** One fix can reject contracts

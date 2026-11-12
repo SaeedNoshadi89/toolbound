@@ -35,6 +35,7 @@ from toolbound.core.errors import (
     ToolboundError,
     ToolboundWarning,
     ToolFailure,
+    ToolRefusal,
 )
 from toolbound.core.exposure import ToolDefinition
 from toolbound.core.gateway import Gateway, allow_all, deny_all
@@ -111,6 +112,7 @@ __all__ = [
     "ToolDefinition",
     "ToolError",
     "ToolFailure",
+    "ToolRefusal",
     "ToolResult",
     "ToolSpec",
     "ToolboundError",

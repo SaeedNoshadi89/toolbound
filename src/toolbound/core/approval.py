@@ -67,6 +67,11 @@ class PendingApproval:
     token: str = ""
     target: Mapping[str, Any] = field(default_factory=dict)
     summary_truncated: bool = False
+    #: The tool-call id of the call that requested approval, if it had one. The
+    #: approval executes at most once per call id: a second request sealed for the
+    #: same call id is refused with ``duplicate_call`` once either has run. Hosts may
+    #: also use it to show one approval card per model tool call.
+    call_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -81,6 +86,7 @@ class PendingApproval:
             "summary": self.summary,
             "summary_truncated": self.summary_truncated,
             "expires_at": self.expires_at,
+            "call_id": self.call_id,
             "token": self.token,
         }
 
@@ -147,8 +153,7 @@ class ApprovalManager:
     """Issues approval requests and grants, and verifies grants exactly once."""
 
     def __init__(self, signer: Signer, store: StateStore, *, ttl_seconds: float = 600) -> None:
-        if not 0 < ttl_seconds <= MAX_APPROVAL_TTL:
-            raise ValueError(f"approval_ttl must be between 0 and {MAX_APPROVAL_TTL} seconds")
+        check_approval_ttl(ttl_seconds)
         self._signer = signer
         self._store = store
         self.ttl_seconds = ttl_seconds
@@ -163,12 +168,15 @@ class ApprovalManager:
         arguments: Mapping[str, Any],
         bound: Mapping[str, Any],
         target: Mapping[str, Any] | None = None,
+        call_id: str | None = None,
+        ttl_seconds: float | None = None,
     ) -> PendingApproval:
+        ttl = self.ttl_seconds if ttl_seconds is None else check_approval_ttl(ttl_seconds)
         digest = approval_digest(
             tool=tool, fingerprint=fingerprint, ctx=ctx, arguments=arguments, bound=bound
         )
         request_id = secrets.token_urlsafe(16)
-        expires_at = time.time() + self.ttl_seconds
+        expires_at = time.time() + ttl
         target_map = dict(target or {})
         summary, truncated = _summary(tool, effect, target_map, ctx, arguments, bound)
         token = self._signer.seal(
@@ -184,8 +192,9 @@ class ApprovalManager:
                 "n": ctx.tenant,
                 "g": target_map,
                 "x": expires_at,
+                "c": call_id,
             },
-            self.ttl_seconds,
+            ttl,
         )
         return PendingApproval(
             id=request_id,
@@ -201,6 +210,7 @@ class ApprovalManager:
             token=token,
             target=target_map,
             summary_truncated=truncated,
+            call_id=call_id,
         )
 
     def open(self, request: PendingApproval | str) -> PendingApproval:
@@ -217,6 +227,8 @@ class ApprovalManager:
             tool, actor, tenant = str(payload["t"]), str(payload["u"]), payload["n"]
             request_id, digest = str(payload["i"]), str(payload["d"])
             expires_at = float(payload["x"])
+            # Absent in requests sealed by Toolbound < 0.3.
+            call_id = None if payload.get("c") is None else str(payload["c"])
         except (KeyError, TypeError, ValueError):
             raise ApprovalInvalid("approval request is malformed") from None
         ctx = ExecutionContext(actor=actor, tenant=tenant)
@@ -235,6 +247,7 @@ class ApprovalManager:
             token=str(token),
             target=target,
             summary_truncated=truncated,
+            call_id=call_id,
         )
 
     def grant(self, request: PendingApproval | str, *, approved_by: str) -> str:
@@ -246,7 +259,9 @@ class ApprovalManager:
         if remaining <= 0:
             raise ApprovalInvalid("approval request has expired")
         return self._signer.sign(
-            _GRANT_PREFIX, {"i": pending.id, "d": pending.digest, "by": approved_by}, remaining
+            _GRANT_PREFIX,
+            {"i": pending.id, "d": pending.digest, "by": approved_by, "c": pending.call_id},
+            remaining,
         )
 
     def verify(
@@ -308,6 +323,13 @@ class ApprovalManager:
 #: are configured with different ``approval_ttl`` values.
 MAX_APPROVAL_TTL = 7 * 24 * 3600
 _CLAIM_TTL = MAX_APPROVAL_TTL + 3600
+
+
+def check_approval_ttl(ttl_seconds: float) -> float:
+    """An approval lifetime: more than 0 and at most :data:`MAX_APPROVAL_TTL` seconds."""
+    if isinstance(ttl_seconds, bool) or not 0 < ttl_seconds <= MAX_APPROVAL_TTL:
+        raise ValueError(f"approval_ttl must be between 0 and {MAX_APPROVAL_TTL} seconds")
+    return float(ttl_seconds)
 
 
 def _claim_key(ctx: ExecutionContext, request_id: str) -> str:

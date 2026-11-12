@@ -87,6 +87,23 @@ approves. Changing any part of the request breaks the token. A different actor o
 gets `approval_invalid`. A token works only once, and only until it expires (default 10
 minutes, `Gateway(approval_ttl=...)`). Use the same `Gateway(secret=...)` on every worker.
 
+- **Values prepared for one request.** If the context binds values that exist only for the
+  request (a fresh operation id, the record version the human saw), resume with
+  `bound="sealed"`: those `attributes.<key>` values come from the token, while the actor,
+  tenant and scopes come from the live context. With the default `bound="live"`, a
+  changed value is `approval_invalid` and `error.details["changed_bound"]` names it.
+- **Different lifetimes.** A chat card and a review queue item can live for different
+  times: set `approval_ttl` on the tool or pass `gateway.call(..., approval_ttl=...)`
+  (at most 7 days).
+- **One card per model tool call.** `PendingApproval.call_id` is the call that requested
+  it. If the model repeats a call, show the existing card; even if both are approved, the
+  action runs once.
+- **Business refusals.** A Python tool that cannot act (the record changed, it is
+  closed) raises `ToolRefusal("version_conflict", "...")`. The result is `refused` with
+  `details["reason"]`, so the host can tell the human why, and nothing is retried.
+- **Who is signed in.** Pass the user object as `ExecutionContext(principal=user)`;
+  handlers and `authorize` read `ctx.principal`. It is never sealed, logged or shown.
+
 ## FastAPI (tested example)
 
 [`examples/fastapi_app.py`](../examples/fastapi_app.py) is a tool-execution API for an
@@ -184,9 +201,39 @@ Notes:
 
 - For a remote (HTTP) MCP server, derive the `ExecutionContext` from the **authenticated
   MCP session**, never from tool arguments.
-- MCP has no standard channel for Toolbound's approval flow yet, so destructive tools
-  return `approval_required`. Handle approval out of band, or keep destructive tools off
-  MCP servers for now.
+- MCP has no standard channel for Toolbound's approval flow yet, so a tool that needs
+  approval returns `approval_required` to the client. Never let the MCP client approve:
+  it is the agent's side of the boundary (T7). Handle the approval out of band, as the
+  FastAPI example does (sketch below), or keep such tools off MCP servers for now.
+
+Out-of-band approval for an MCP server: keep the token on the server and give the model
+only an opaque id; the human approves through your own authenticated UI.
+
+```python
+pending: dict[str, PendingApproval] = {}  # use a database with several workers
+
+
+async def call_tool(request_context, params):
+    call_id = str(request_context.request_id)  # stable per MCP request
+    result = await gateway.call(params.name, params.arguments or {}, ctx=ctx, call_id=call_id)
+    if result.approval is not None:
+        pending[result.approval.id] = result.approval  # the token never leaves the server
+        text = json.dumps({"status": "approval_required", "approval_id": result.approval.id})
+    else:
+        text = result.to_json()
+    return types.CallToolResult(
+        content=[types.TextContent(type="text", text=text)], is_error=not result.ok
+    )
+
+
+# In your own web app, behind the human's session (never reachable by the MCP client):
+async def approve(approval_id: str, user_ctx: ExecutionContext):
+    request = pending.pop(approval_id)
+    return await gateway.resume(request, ctx=user_ctx, approved_by=user_ctx.actor)
+```
+
+  This sketch is not run in CI (the MCP SDK is not a test dependency); the FastAPI example
+  it follows is.
 - The MCP SDK's API has changed between major versions; a tested, packaged adapter with
   pinned compatibility is planned for v0.3.
 
