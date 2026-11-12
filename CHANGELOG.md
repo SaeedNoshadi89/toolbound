@@ -6,6 +6,11 @@ All notable changes are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-12
+
+Security patch release. **Everyone on 0.2.x should upgrade.** One fix can reject contracts
+that 0.2.1 accepted (see the first item).
+
 ### Security
 
 - **Medium:** a trusted binding (`bind=`) that was not a path placeholder and was left out
