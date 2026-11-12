@@ -6,7 +6,12 @@ All notable changes are documented here. The format follows
 
 ## [Unreleased]
 
-Fixes and additions found while integrating Toolbound into a host application.
+## [0.3.0] - 2026-11-12
+
+Security fix and host-integration additions. **Everyone using approvals with tool-call ids
+should upgrade.** All additions are optional; no existing contract or call changes. One
+behavior change, which is the fix: a second approval request for a call id that already
+executed is refused with `duplicate_call`.
 
 ### Security
 
