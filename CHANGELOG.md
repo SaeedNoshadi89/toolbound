@@ -6,6 +6,23 @@ All notable changes are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- **Medium:** a trusted binding (`bind=`) that was not a path placeholder and was left out
+  of explicit `query=`/`body=` lists was silently dropped from the request, while
+  `authorize()` and the approval summary still saw it. A tenant filter could vanish this
+  way. Such contracts now fail at registration with a `ConfigurationError`.
+  **This can break contracts that relied on the old behavior; add the name to `query`
+  or `body`.**
+- **Low:** link-pagination cursors replayed the upstream's next URL verbatim, so the upstream
+  decided the bound query values for later pages. Bound query values are now re-applied.
+- **Low:** cross-origin redirects (only with `follow_redirects=True`) kept static
+  `Service.headers` / `Operation.headers`. They are now dropped along with credentials.
+- **Low:** `SecureTransport` decompressed each raw chunk in full before checking the size
+  limit, so one compressed chunk could briefly inflate to tens of MiB. Decompression is now
+  capped at every step. Only `gzip` and `deflate` (the encodings Toolbound requests) are
+  accepted; other or stacked `Content-Encoding` values are `upstream_error`.
+
 ## [0.2.1] - 2026-11-11
 
 Documentation-only release. **No code changes**; upgrading from 0.2.0 is optional.

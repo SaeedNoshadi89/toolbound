@@ -229,7 +229,7 @@ def build_url(
     base = urlsplit(base_url)
     full_path = (base.path.rstrip("/") + path) if path != "/" else (base.path or "/")
     url = f"{base.scheme}://{base.netloc}{full_path}"
-    pairs = _flatten_query(query)
+    pairs = flatten_query(query)
     if pairs:
         url += "?" + urlencode(pairs, doseq=False)
     built = urlsplit(url)
@@ -238,7 +238,7 @@ def build_url(
     return url
 
 
-def _flatten_query(query: Sequence[tuple[str, Any]]) -> list[tuple[str, str]]:
+def flatten_query(query: Sequence[tuple[str, Any]]) -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
     for name, value in query:
         if value is None:
