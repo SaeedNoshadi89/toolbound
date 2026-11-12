@@ -53,7 +53,7 @@ from toolbound.core.shaping import Omission
 from toolbound.core.state import MemoryStateStore
 from toolbound.transport.mock import MockResponse, MockTransport
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 
 def __getattr__(name: str) -> object:
