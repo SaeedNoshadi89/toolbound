@@ -12,7 +12,8 @@ For each request it:
    environment variables (``trust_env=False``), and **never stores cookies**,
    so state set by an upstream for one user can never be sent on behalf of
    another,
-4. streams the body and aborts once the *decompressed* size exceeds the limit,
+4. streams the body and decompresses it itself, capping every step, so it aborts
+   once the *decompressed* size exceeds the limit without ever inflating more,
 5. enforces a total deadline per attempt, defeating slow-drip responses,
 6. reports whether a failed request may have reached the upstream, so callers
    can tell "certainly not sent" from "outcome unknown".
@@ -29,6 +30,7 @@ import socket
 import threading
 import time
 import weakref
+import zlib
 from http.cookiejar import CookieJar, DefaultCookiePolicy
 from typing import Protocol
 from urllib.parse import SplitResult, urlsplit, urlunsplit
@@ -178,17 +180,13 @@ class SecureTransport:
                             "upstream response exceeds the size limit",
                             retryable=False,
                         )
+                    decoder = _BoundedDecoder(
+                        response.headers.get("content-encoding", ""), request.max_response_bytes
+                    )
                     chunks: list[bytes] = []
-                    size = 0
-                    async for chunk in response.aiter_bytes():
-                        size += len(chunk)
-                        if size > request.max_response_bytes:
-                            raise ToolFailure(
-                                ErrorCode.RESPONSE_TOO_LARGE,
-                                "upstream response exceeds the size limit",
-                                retryable=False,
-                            )
-                        chunks.append(chunk)
+                    async for raw in response.aiter_raw():
+                        chunks.append(decoder.feed(raw))
+                    chunks.append(decoder.finish())
                 finally:
                     await response.aclose()
         except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as exc:
@@ -255,6 +253,86 @@ class SecureTransport:
         v4 = [a for a in addresses if ":" not in a]
         v6 = [a for a in addresses if ":" in a]
         return v4 + v6
+
+
+def _too_large() -> ToolFailure:
+    return ToolFailure(
+        ErrorCode.RESPONSE_TOO_LARGE, "upstream response exceeds the size limit", retryable=False
+    )
+
+
+def _undecodable() -> ToolFailure:
+    return ToolFailure(
+        ErrorCode.UPSTREAM_ERROR, "upstream sent an undecodable body", retryable=False
+    )
+
+
+class _BoundedDecoder:
+    """Decodes ``Content-Encoding`` while never holding more than ``limit + 1`` bytes.
+
+    httpx decompresses each raw chunk in full before the caller can count it, so a
+    64 KiB gzip chunk can expand to tens of MiB first. Here every decompress call is
+    capped with ``max_length``, so output stops one byte past the limit.
+    """
+
+    def __init__(self, content_encoding: str, limit: int) -> None:
+        codings = [c.strip().lower() for c in content_encoding.split(",") if c.strip()]
+        codings = [c for c in codings if c != "identity"]
+        if len(codings) > 1:
+            raise _undecodable()  # stacked encodings: never requested, not supported
+        self._coding = codings[0] if codings else None
+        if self._coding not in (None, "gzip", "x-gzip", "deflate"):
+            raise _undecodable()  # only gzip and deflate are requested
+        self._limit = limit
+        self._size = 0
+        self._obj: zlib._Decompress | None = None
+        if self._coding in ("gzip", "x-gzip"):
+            self._obj = zlib.decompressobj(zlib.MAX_WBITS | 16)
+        self._first = b""  # deflate: buffered until the zlib/raw choice is made
+
+    def _count(self, data: bytes) -> bytes:
+        self._size += len(data)
+        if self._size > self._limit:
+            raise _too_large()
+        return data
+
+    def _drain(self, data: bytes) -> bytes:
+        assert self._obj is not None
+        out: list[bytes] = []
+        try:
+            while data:
+                piece = self._obj.decompress(data, self._limit - self._size + 1)
+                out.append(self._count(piece))
+                data = self._obj.unconsumed_tail
+        except zlib.error:
+            raise _undecodable() from None
+        return b"".join(out)
+
+    def feed(self, data: bytes) -> bytes:
+        if self._coding is None:
+            return self._count(data)
+        if self._obj is None:  # deflate: RFC says zlib-wrapped, many servers send raw
+            self._first += data
+            if len(self._first) < 2:
+                return b""
+            data, self._first = self._first, b""
+            wrapped = (data[0] & 0x0F) == 8 and int.from_bytes(data[:2], "big") % 31 == 0
+            self._obj = zlib.decompressobj(zlib.MAX_WBITS if wrapped else -zlib.MAX_WBITS)
+        return self._drain(data)
+
+    def finish(self) -> bytes:
+        if self._coding is None:
+            return b""
+        if self._obj is None:
+            if not self._first:
+                return b""
+            self._obj = zlib.decompressobj(-zlib.MAX_WBITS)
+            data, self._first = self._first, b""
+            return self._drain(data)
+        try:
+            return self._count(self._obj.flush())
+        except zlib.error:
+            raise _undecodable() from None
 
 
 def _after_connect(sent: bool | None) -> bool | None:

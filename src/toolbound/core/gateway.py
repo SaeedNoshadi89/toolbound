@@ -27,7 +27,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path as FsPath
 from typing import Any, TypeVar, cast
-from urllib.parse import urlencode, urljoin, urlsplit
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit
 
 from .approval import ApprovalManager, PendingApproval
 from .budget import ByteEstimator
@@ -54,7 +54,7 @@ from .errors import (
     ToolFailure,
 )
 from .exposure import Strategy, ToolDefinition, group_definitions
-from .network import build_url, check_url, same_origin
+from .network import build_url, check_url, flatten_query, same_origin
 from .observe import Event, NullObserver
 from .paths import MISSING, parse_path
 from .ports import (
@@ -337,6 +337,17 @@ class Gateway:
                     raise ConfigurationError(
                         f"tool {spec.name}: {listed!r} in query/body is not an input or binding"
                     )
+            # A trusted binding that lands nowhere would be silently dropped: the
+            # authorizer and the approval summary would see a value (a tenant id, say)
+            # that is never sent upstream. Refuse such contracts.
+            placeable = {n: None for n in [*props, *bound_names] if n not in spec.path_params}
+            query_names, body_names = _placement(spec, placeable)
+            unsent = bound_names - set(spec.path_params) - set(query_names) - set(body_names)
+            if unsent:
+                raise ConfigurationError(
+                    f"tool {spec.name}: bound parameter(s) {sorted(unsent)} would never be "
+                    "sent; add them to the path, query= or body="
+                )
             pagination = spec.pagination
             if pagination is not None and pagination.param in known:
                 raise ConfigurationError(
@@ -1005,6 +1016,11 @@ class Gateway:
             expected = build_url(svc.base_url, op.path, path_values, [])
             if not same_origin(url, expected) or urlsplit(url).path != urlsplit(expected).path:
                 raise ToolFailure(ErrorCode.INVALID_CURSOR, "cursor does not match this operation")
+            # The next-page URL comes from the upstream; trusted query values (a tenant
+            # filter, say) are re-applied rather than taken on trust from it.
+            url = _override_query(
+                url, [(k, remaining[k]) for k in query_names if k in bound and k in remaining]
+            )
             if isinstance(auth, ApiKeyAuth) and auth.query is not None:
                 url += ("&" if "?" in url else "?") + urlencode({auth.query: secrets[0]})
         else:
@@ -1241,8 +1257,17 @@ class Gateway:
                 drop = {"authorization", "cookie"}
                 if credential_header:
                     drop.add(credential_header.lower())
+                # Static service/operation headers may carry tenant keys or shared
+                # secrets meant for the original origin only.
+                drop.update(k.lower() for k in op.service.headers)
+                drop.update(k.lower() for k in op.headers)
                 # Query-string API keys are not copied either: Location is used verbatim.
                 headers = [(k, v) for k, v in headers if k.lower() not in drop]
+                present = {k.lower() for k, _ in headers}
+                if "accept" not in present:
+                    headers.append(("Accept", "application/json"))
+                if "user-agent" not in present:
+                    headers.append(("User-Agent", _USER_AGENT))
             method, body = current.method, current.body
             if response.status == 303 or (response.status in (301, 302) and method == "POST"):
                 method, body = "GET", None
@@ -1360,6 +1385,16 @@ def _placement(op: Operation, remaining: Mapping[str, Any]) -> tuple[list[str], 
     return ([], names) if body_method else (names, [])
 
 
+def _override_query(url: str, pairs: Sequence[tuple[str, Any]]) -> str:
+    """Replace every occurrence of the named query parameters with trusted values."""
+    if not pairs:
+        return url
+    names = {k for k, _ in pairs}
+    parts = urlsplit(url)
+    kept = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k not in names]
+    return parts._replace(query=urlencode(kept + flatten_query(pairs))).geturl()
+
+
 def _random_key() -> str:
     return secrets.token_hex(16)
 
@@ -1448,7 +1483,6 @@ def _next_upstream(
         if isinstance(op.service.auth, ApiKeyAuth) and op.service.auth.query:
             # never store a credential inside a cursor
             parts = urlsplit(target)
-            from urllib.parse import parse_qsl
 
             kept = [(k, v) for k, v in parse_qsl(parts.query) if k != op.service.auth.query]
             target = parts._replace(query=urlencode(kept)).geturl()

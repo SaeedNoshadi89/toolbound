@@ -135,6 +135,9 @@ name the failing location and list the allowed arguments.
 encoded. Remaining values go to the query string for GET/HEAD/DELETE/OPTIONS and into the
 body for POST/PUT/PATCH, unless `query`/`body` say otherwise. Parameters are emitted in
 schema order, so URLs are deterministic.
+Every binding must end up somewhere: a bound name that is not a path placeholder and is
+left out by explicit `query`/`body` lists is a `ConfigurationError` at registration, so a
+trusted value (a tenant id, say) is never silently dropped.
 
 ### Bindings
 
