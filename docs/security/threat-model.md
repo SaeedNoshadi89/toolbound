@@ -98,7 +98,7 @@ Toolbound).
 | S3 | Another user replays or steals an approval token | T | approval requests are encrypted and authenticated (AES-256-GCM); the grant digest binds actor, tenant, tool, contract fingerprint, arguments and trusted values; a different context fails | G |
 | S4 | Forged approval request built by the host from client data | T | `grant()`/`resume()` trust only the gateway-issued token, never `PendingApproval` fields | G |
 | S5 | DNS rebinding to impersonate an allowed host | D | every answer checked, connection pinned to the checked address, no second lookup; TLS verifies the original name | G |
-| S6 | Token forged with a guessed or leaked secret | — | 32-byte minimum secret; per-purpose derived keys; rotation invalidates all tokens | S (secret management) |
+| S6 | Token forged with a guessed or leaked secret | — | 32-byte minimum secret; per-purpose derived keys; rotation with a key list (new key first): new tokens use only the new key, and dropping the leaked key invalidates every token it issued; replay claims are per request id, so rotation cannot revive a used approval | S (secret management) |
 
 ### Tampering
 

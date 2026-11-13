@@ -141,7 +141,9 @@ class Gateway:
         estimator: Token estimator. Defaults to :class:`ByteEstimator`.
         observer: Receives structured events. Defaults to no-op.
         state: Store for single-use approvals and call-id replay protection.
-        secret: HMAC key (>= 32 bytes) for cursors and approval grants. If
+        secret: Key (>= 32 bytes) that signs and encrypts cursors, approval
+            requests and grants, or a list of keys for rotation: the first signs
+            every new token, every key is accepted when one is checked. If
             omitted a random per-process key is used, so cursors and grants do
             not survive restarts or work across processes.
         visibility: Optional ``(ctx, tool) -> bool`` deciding which tools a
@@ -160,7 +162,7 @@ class Gateway:
         estimator: TokenEstimator | None = None,
         observer: Observer | None = None,
         state: StateStore | None = None,
-        secret: bytes | str | None = None,
+        secret: bytes | str | Sequence[bytes | str] | None = None,
         visibility: Callable[[ExecutionContext, Tool], bool] | None = None,
         transforms: Mapping[str, Callable[[Any], Any]] | None = None,
         approval_ttl: float = 600,

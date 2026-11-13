@@ -6,6 +6,13 @@ All notable changes are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Gateway secret rotation: `Gateway(secret=[new, old, ...])` (at most 8 distinct keys of
+  32+ bytes). The first key signs and encrypts new cursors, approval requests and grants;
+  every listed key is accepted when one is checked. A single secret behaves as before.
+  Changing the secret no longer has to invalidate every open approval at once.
+
 ## [0.3.0] - 2026-11-12
 
 Security fix and host-integration additions. **Everyone using approvals with tool-call ids

@@ -85,7 +85,9 @@ to a browser, or keep it in a workflow checkpoint, and later call
 `gateway.resume(token, ctx=ctx, approved_by=...)` with the **live** context of the user who
 approves. Changing any part of the request breaks the token. A different actor or tenant
 gets `approval_invalid`. A token works only once, and only until it expires (default 10
-minutes, `Gateway(approval_ttl=...)`). Use the same `Gateway(secret=...)` on every worker.
+minutes, `Gateway(approval_ttl=...)`). Use the same `Gateway(secret=...)` on every worker;
+to change it without breaking open approvals, pass `secret=[new, old]` for as long as the
+old key's tokens can live.
 
 - **Values prepared for one request.** If the context binds values that exist only for the
   request (a fresh operation id, the record version the human saw), resume with
