@@ -15,7 +15,7 @@ Gateway(
     estimator=None,               # TokenEstimator; default ByteEstimator()
     observer=None,                # Observer; default no-op
     state=None,                   # StateStore; default MemoryStateStore()
-    secret=None,                  # bytes|str >= 32 bytes; signs cursors and approvals
+    secret=None,                  # bytes|str >= 32 bytes, or a list for rotation (first signs, all verify)
     visibility=None,              # (ctx, tool) -> bool; hidden == unknown
     transforms=None,              # {"name": callable} for declarative shapes
     approval_ttl=600, cursor_ttl=3600, call_id_ttl=86400,

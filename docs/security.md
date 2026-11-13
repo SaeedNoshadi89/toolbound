@@ -107,7 +107,12 @@ fixed by trusted code.
 - **Signing keys.** Without `secret=`, a random per-process key is used and a
   `ToolboundWarning` is emitted the first time a cursor or approval is issued. Cursors and
   approvals then fail (closed) after a restart and on other workers. Use a 32+ byte secret
-  from your vault. Rotation invalidates outstanding cursors, approval requests and grants.
+  from your vault. **Rotation:** pass a list, `secret=[new, old]`. The first key signs and
+  encrypts every new token; every listed key is accepted when a token is checked, so
+  outstanding approvals and cursors keep working. Drop the old key once the longest-lived
+  token it issued has expired (approval requests live at most 7 days); its tokens then stop
+  working. After a leak, drop the leaked key at once, which invalidates everything it
+  issued. Use the same list, in the same order, on every worker.
 - **Token contents.** Cursors and approval requests are encrypted. Grants are signed but
   readable: they contain only an id, a digest and `approved_by`.
 - **Rate limits are per process.** Use your API gateway or a shared limiter for global
