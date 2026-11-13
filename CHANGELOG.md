@@ -6,6 +6,11 @@ All notable changes are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-13
+
+Gateway secret rotation. Optional and backward compatible: a single secret behaves as
+before.
+
 ### Added
 
 - Gateway secret rotation: `Gateway(secret=[new, old, ...])` (at most 8 distinct keys of
@@ -13,7 +18,7 @@ All notable changes are documented here. The format follows
   every listed key is accepted when one is checked. A single secret behaves as before.
   Changing the secret no longer has to invalidate every open approval at once.
 
-## [0.3.0] - 2026-11-12
+## [0.3.0] - 2026-11-13
 
 Security fix and host-integration additions. **Everyone using approvals with tool-call ids
 should upgrade.** All additions are optional; no existing contract or call changes. One
